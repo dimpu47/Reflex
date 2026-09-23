@@ -1,8 +1,8 @@
-# Reflex (jev-proxy) 🚀✨
+# Reflex 🚀✨
 
 **Intelligent Observability and Remediation Proxy**
 
-Reflex is a high-throughput Go proxy that ingests infrastructure alerts via HTTP webhooks, integrates with the Jev decision model API to evaluate them concurrently, and routes them to either an auto-remediation runbook (if it's a known slay) or a human escalation queue (if it needs adult supervision). 
+Reflex is a high-throughput Go proxy that ingests infrastructure alerts via HTTP webhooks, integrates with decision model APIs (like Jev and local Laya instances) to evaluate them concurrently, and routes them to either an auto-remediation runbook (if it's a known slay) or a human escalation queue (if it needs adult supervision).
 
 ## 🏗️ Architecture
 
