@@ -11,8 +11,8 @@ We use standard Go concurrency (goroutines and buffered channels) to keep things
 ```mermaid
 graph TD
     A[External Prometheus/Datadog] -->|POST /webhook| B(HTTP Ingress Server)
-    B -->|Buffered Chan| C(Ingester / Jev Evaluator Workers)
-    C <-->|Evaluate API Call| Z[Jev API or Laya Local]
+    B -->|Buffered Chan| C(Reflex Evaluator Workers)
+    C <-->|Evaluate API Call| Z[Decision API: Jev or Laya]
     C -->|Evaluation Result| D(Buffered Event Chan)
     D --> E(Router)
     E -->|High Confidence, Low Sev| F[Auto-Remediate Runbooks]
