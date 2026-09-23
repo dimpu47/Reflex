@@ -1,5 +1,9 @@
 # Reflex 🚀✨
 
+> [!WARNING]
+> **Experimental / Work In Progress**
+> This repository is currently a sandbox for experimenting and playing around with the [Jev](https://jev.com) and [Laya](https://github.com/NandhaKishorM/laya) decision model APIs. It is not currently intended for production use.
+
 **Intelligent Observability and Remediation Proxy**
 
 Reflex is a high-throughput Go proxy that ingests infrastructure alerts via HTTP webhooks, integrates with decision model APIs (like Jev and local Laya instances) to evaluate them concurrently, and routes them to either an auto-remediation runbook (if it's a known slay) or a human escalation queue (if it needs adult supervision).
