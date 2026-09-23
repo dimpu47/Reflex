@@ -1,0 +1,7 @@
+{
+  "id": "test-alert-1",
+  "service_name": "redis",
+  "payload": {
+    "status": "firing"
+  }
+}

@@ -1,0 +1,26 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: reflex-rules
+  labels:
+    release: prometheus
+spec:
+  groups:
+  - name: reflex-alerts
+    rules:
+    - alert: RedisDown
+      expr: absent(up{job="redis"}) or up{job="redis"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Redis is down"
+        description: "Redis instance has been down for more than 1 minute."
+    - alert: HighErrorRate
+      expr: vector(1) # synthetic alert for testing
+      for: 1m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High error rate"
+        description: "Application is experiencing a high error rate."

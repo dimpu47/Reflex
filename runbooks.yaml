@@ -1,0 +1,3 @@
+runbooks:
+  database: "./scripts/restart-redis.sh"
+  application: "./scripts/restart-deployment.sh"

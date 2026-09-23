@@ -1,0 +1,18 @@
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: reflex-config
+  labels:
+    release: prometheus
+spec:
+  route:
+    groupBy: ['alertname']
+    groupWait: 10s
+    groupInterval: 1m
+    repeatInterval: 1h
+    receiver: 'reflex-webhook'
+  receivers:
+  - name: 'reflex-webhook'
+    webhookConfigs:
+    - url: 'http://host.k3d.internal:8080/webhook'
+      sendResolved: true

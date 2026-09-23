@@ -1,0 +1,22 @@
+# Binaries
+bin/
+reflex
+reflex.exe
+
+# Go
+vendor/
+go.work
+go.work.sum
+
+# Python (Laya)
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+
+# OS
+.DS_Store
+Thumbs.db
