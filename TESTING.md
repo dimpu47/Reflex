@@ -1,6 +1,6 @@
 # End-to-End Kubernetes Testing
 
-This guide explains how to test the `reflex` auto-remediation flow locally using a local Kubernetes cluster (k3d). When an alert is sent to `reflex`, it will evaluate the alert, determine the failing component, and execute a local bash runbook (e.g., `./scripts/restart-redis.sh`) to automatically remediate the issue via `kubectl`.
+This guide explains how to test the `reflex` auto-remediation flow locally using a local Kubernetes cluster (k3d). When an alert is sent to `reflex`, it will evaluate the alert, determine the failing component, and execute a sandboxed **WebAssembly (.wasm)** runbook DAG to automatically remediate the issue (with distributed crash recovery).
 
 ---
 
@@ -17,7 +17,6 @@ wsl bash -c "sleep infinity"
 Ensure your `DOCKER_HOST` is pointing to the rootless Podman socket, and make the runbook scripts executable. From inside WSL (or via `wsl bash -c`):
 ```bash
 export DOCKER_HOST=unix:///run/user/1000/podman/podman.sock
-chmod +x ./scripts/*.sh
 ```
 
 ### 3. Spin up the Local Cluster
@@ -37,7 +36,7 @@ In another Windows terminal, simulate an Alertmanager webhook payload to trigger
 ```cmd
 curl.exe -X POST http://localhost:8080/webhook -H "Content-Type: application/json" -d "{\"id\":\"test-1\",\"service_name\":\"redis\",\"payload\":{\"status\":\"firing\"}}"
 ```
-You should see `reflex` log that it executed the runbook.
+You should see `reflex` log that it fetched the Wasm module and executed the DAG.
 
 ### 6. Verify Auto-Remediation
 Check your cluster to confirm that the runbook successfully executed `kubectl rollout restart deployment redis`. The `redis` pod should show a very recent age (e.g., `10s`).
@@ -57,10 +56,7 @@ Ensure you have the following installed:
 - [kubectl](https://kubernetes.io/docs/tasks/tools/)
 - [Helm](https://helm.sh/docs/intro/install/)
 
-### 2. Set Script Permissions
-Make sure the setup script and runbooks are executable:
 ```bash
-chmod +x scripts/*.sh
 ```
 
 ### 3. Spin up the Local Cluster
@@ -85,8 +81,8 @@ curl -X POST http://localhost:8080/webhook \
 ```
 
 ### 6. Verify Auto-Remediation
-The `reflex` logs will output `[✅ AUTO-REMEDIATE]` and execute the `restart-redis.sh` bash script. Verify the pod rollout occurred:
+The `reflex` logs will output `[✅ AUTO-REMEDIATE DAG]` and execute the sandboxed Wasm runbooks. Verify the pod rollout occurred:
 ```bash
 kubectl get pods
 ```
-You should see that the `redis` pod has a very recent `AGE`, confirming the runbook successfully remediated the simulated outage.
+You should see that the `redis` pod has a very recent `AGE`, confirming the Wasm DAG successfully remediated the simulated outage.

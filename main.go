@@ -3,47 +3,195 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
+	"encoding/json"
 
-	"jev-proxy/ingest"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/leaderelection"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	"k8s.io/client-go/util/homedir"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"jev-proxy/evaluator"
+	"jev-proxy/ingest"
 	"jev-proxy/router"
 	"jev-proxy/runbooks"
+	"jev-proxy/stormbreaker"
+	"jev-proxy/memory"
+	"jev-proxy/tui"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
-	fmt.Println("🚀 Starting Reflex: Intelligent Observability and Remediation Proxy")
-
-	// 1. Initialize dependencies
-	var jevClient evaluator.Client
-	apiKey := os.Getenv("JEV_API_KEY")
-	customEndpoint := os.Getenv("JEV_API_ENDPOINT")
-
-	if customEndpoint != "" || apiKey != "" {
-		if customEndpoint != "" {
-			fmt.Printf("🌐 JEV_API_ENDPOINT detected. Using REAL API Client pointing to: %s\n", customEndpoint)
-		} else {
-			fmt.Println("🔑 JEV_API_KEY detected. Using REAL Jev API Client.")
+	// 0. Intercept CLI commands
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "tui":
+			if err := tui.Start(); err != nil {
+				fmt.Printf("Error running TUI: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "pending":
+			resp, err := http.Get("http://localhost:8080/pending")
+			if err != nil {
+				fmt.Printf("Error contacting proxy: %v\n", err)
+				os.Exit(1)
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			fmt.Printf("Pending Approvals:\n%s\n", string(body))
+			return
+		case "approve":
+			if len(os.Args) < 3 {
+				fmt.Println("Usage: reflex approve <alert-id>")
+				os.Exit(1)
+			}
+			req, _ := http.NewRequest("POST", "http://localhost:8080/approve?id="+os.Args[2], nil)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil || resp.StatusCode != 200 {
+				fmt.Printf("Failed to approve (maybe it doesn't exist or proxy is down). Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Successfully approved execution.")
+			return
+		case "deny":
+			if len(os.Args) < 3 {
+				fmt.Println("Usage: reflex deny <alert-id>")
+				os.Exit(1)
+			}
+			req, _ := http.NewRequest("POST", "http://localhost:8080/deny?id="+os.Args[2], nil)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil || resp.StatusCode != 200 {
+				fmt.Printf("Failed to deny (maybe it doesn't exist or proxy is down). Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Successfully denied execution.")
+			return
 		}
-		jevClient = evaluator.NewRealClient(apiKey, customEndpoint)
-	} else {
-		fmt.Println("⚠️  No API Key or Endpoint detected. Using Mock Jev API Client.")
-		jevClient = evaluator.NewMockClient()
 	}
 
-	runbookEngine := runbooks.NewEngine()
+	fmt.Println("🚀 Starting Reflex: Intelligent Observability and Remediation Proxy")
+
+	// 0. Initialize Kubernetes Client (Distributed DAG State via CRDs/ConfigMaps)
+	var k8sClient *kubernetes.Clientset
+	
+	// Try in-cluster config first
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		// Fallback to local kubeconfig
+		kubeconfig := filepath.Join(homedir.HomeDir(), ".kube", "config")
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+	}
+	
+	if err == nil {
+		k8sClient, err = kubernetes.NewForConfig(config)
+		if err != nil {
+			k8sClient = nil
+		}
+	}
+
+	if k8sClient == nil {
+		fmt.Println("⚠️  Could not connect to Kubernetes API. Running in stateless mode (no DAG persistence).")
+	} else {
+		fmt.Println("🗄️  Connected to Kubernetes API for distributed DAG state (CRDs).")
+	}
+
+	// 1. Initialize dependencies
+	var aiClient evaluator.Client
+	
+	decisionAPI := os.Getenv("DECISION_API")
+	apiKey := os.Getenv("AI_API_KEY")
+
+	switch decisionAPI {
+	case "jev":
+		fmt.Println("🌐 Using Jev-Cloud for Decision API (https://api.jev.com/v1/evaluate)")
+		aiClient = evaluator.NewRealClient(apiKey, "https://api.jev.com/v1/evaluate")
+	case "laya":
+		fmt.Println("🧠 Using Laya-Server for Decision API (http://localhost:8081/v1/evaluate)")
+		aiClient = evaluator.NewRealClient("", "http://localhost:8081/v1/evaluate")
+	default:
+		// Fallback to old behavior for backwards compatibility
+		customEndpoint := os.Getenv("AI_API_ENDPOINT")
+		if customEndpoint != "" || apiKey != "" {
+			if customEndpoint != "" {
+				fmt.Printf("🌐 AI_API_ENDPOINT detected. Using REAL AI Client pointing to: %s\n", customEndpoint)
+			} else {
+				fmt.Println("🔑 AI_API_KEY detected. Using REAL AI Client.")
+			}
+			aiClient = evaluator.NewRealClient(apiKey, customEndpoint)
+		} else {
+			fmt.Println("⚠️  No DECISION_API, API Key, or Endpoint detected. Using Mock AI Client.")
+			aiClient = evaluator.NewMockClient()
+		}
+	}
+
+	// Initialize Memory Store
+	fmt.Println("🧠 Initializing S3 Vector Memory Loader (Local JSONL fallback)")
+	memStore, err := memory.NewStore(os.Getenv("S3_MEMORY_BUCKET"), "reflex/memory.jsonl", "data/memory.jsonl")
+	if err != nil {
+		fmt.Printf("⚠️  Failed to load memory store: %v\n", err)
+	}
+
+	fmt.Println("🤖 Wrapping client with Mixture-of-Agents (MoA) Consensus Engine")
+	aiClient = evaluator.NewMoAClient(aiClient, memStore)
+
+	runbookEngine := runbooks.NewEngine(k8sClient, memStore)
 
 	// 2. Set up buffered channels to handle burst traffic without deadlocks
 	alertChan := make(chan ingest.Alert, 1000)
+	dedupeChan := make(chan ingest.Alert, 1000)
 	eventChan := make(chan router.Event, 1000)
 
 	var wg sync.WaitGroup
+
+	// 3. Start Orphan Watcher with Leader Election
+	if k8sClient != nil {
+		go func() {
+			lock := &resourcelock.LeaseLock{
+				LeaseMeta: metav1.ObjectMeta{
+					Name:      "reflex-orphan-watcher",
+					Namespace: "default",
+				},
+				Client: k8sClient.CoordinationV1(),
+				LockConfig: resourcelock.ResourceLockConfig{
+					Identity: os.Getenv("HOSTNAME"), // Or generate a UUID
+				},
+			}
+
+			leaderelection.RunOrDie(context.Background(), leaderelection.LeaderElectionConfig{
+				Lock:            lock,
+				ReleaseOnCancel: true,
+				LeaseDuration:   15 * time.Second,
+				RenewDeadline:   10 * time.Second,
+				RetryPeriod:     2 * time.Second,
+				Callbacks: leaderelection.LeaderCallbacks{
+					OnStartedLeading: func(ctx context.Context) {
+						fmt.Println("👑 Acquired Leader Lock! Starting Orphan Watcher...")
+						runbookEngine.StartOrphanWatcher() // Blocks
+					},
+					OnStoppedLeading: func() {
+						fmt.Println("❌ Lost Leader Lock!")
+					},
+				},
+			})
+		}()
+	}
+
+	// 2.5 Start Storm-Breaker Deduplicator
+	fmt.Println("🌩️  Initializing Storm-Breaker RAG Deduplicator (5s window)...")
+	deduplicator := stormbreaker.NewDeduplicator(alertChan, dedupeChan, &wg, 5*time.Second)
+	go deduplicator.Start()
 
 	// 3. Setup Configurable Routing Thresholds
 	routerConfig := router.Config{
@@ -63,21 +211,19 @@ func main() {
 	const numWorkers = 10
 	for i := 0; i < numWorkers; i++ {
 		go func(workerID int) {
-			for alert := range alertChan {
+			for alert := range dedupeChan {
 				req := evaluator.EvaluationRequest{
 					State:     alert.Payload,
 					Questions: []string{"domain", "severity", "auto_recoverable"},
 				}
 
-				// The Laya microservice (local) can take longer to evaluate than the mocked client
-				// so we increased the timeout slightly for local testing without GPU.
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				resp, err := jevClient.Evaluate(ctx, req)
+				ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+				resp, err := aiClient.Evaluate(ctx, req)
 				cancel()
 
 				if err != nil {
 					fmt.Printf("Worker %d: Error evaluating alert %s: %v\n", workerID, alert.ID, err)
-					wg.Done() // ensure we release the waitgroup
+					wg.Done()
 					continue
 				}
 
@@ -89,15 +235,45 @@ func main() {
 		}(i)
 	}
 
-	// 5. Start HTTP Ingress Server
+	// 6. Start HTTP Ingress Server
 	mux := http.NewServeMux()
 
-	// Create the HTTP handler passing the waitgroup
 	handler := &ingest.Handler{
 		AlertChan: alertChan,
 		Wg:        &wg,
+		K8sClient: k8sClient,
 	}
 	mux.Handle("/webhook", handler)
+	mux.Handle("/metrics", promhttp.Handler())
+
+	// HITL endpoints
+	mux.HandleFunc("/pending", func(w http.ResponseWriter, r *http.Request) {
+		var pending []string
+		runbookEngine.PendingApprovals.Range(func(key, value interface{}) bool {
+			pending = append(pending, key.(string))
+			return true
+		})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(pending)
+	})
+	mux.HandleFunc("/approve", func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("id")
+		if ch, ok := runbookEngine.PendingApprovals.Load(id); ok {
+			ch.(chan bool) <- true
+			w.WriteHeader(http.StatusOK)
+		} else {
+			http.Error(w, "Not found", 404)
+		}
+	})
+	mux.HandleFunc("/deny", func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("id")
+		if ch, ok := runbookEngine.PendingApprovals.Load(id); ok {
+			ch.(chan bool) <- false
+			w.WriteHeader(http.StatusOK)
+		} else {
+			http.Error(w, "Not found", 404)
+		}
+	})
 
 	server := &http.Server{
 		Addr:    ":8080",
@@ -111,18 +287,25 @@ func main() {
 		}
 	}()
 
-	// 6. Graceful Shutdown
+	// 6.5 Start Mock Wasm Registry Server (For Phase 6 Testing)
+	go func() {
+		registryMux := http.NewServeMux()
+		// Serve the scripts directory as the "Registry"
+		registryMux.Handle("/", http.FileServer(http.Dir("./scripts")))
+		fmt.Println("📦 Mock Wasm Registry listening on http://localhost:9090")
+		http.ListenAndServe(":9090", registryMux)
+	}()
+
+	// 7. Graceful Shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	fmt.Println("\n🛑 Shutting down gracefully...")
 
-	// Stop accepting new requests
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	server.Shutdown(ctx)
+	ctxDown, cancelDown := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelDown()
+	server.Shutdown(ctxDown)
 
-	// Wait for pending alerts to finish processing through the router
 	wgWaitChan := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -137,11 +320,11 @@ func main() {
 	}
 
 	close(alertChan)
+	close(dedupeChan)
 	close(eventChan)
 	fmt.Println("👋 Goodbye!")
 }
 
-// parseFloatEnv helper function to parse float environment variables with a fallback
 func parseFloatEnv(key string, fallback float64) float64 {
 	valStr := os.Getenv(key)
 	if valStr == "" {

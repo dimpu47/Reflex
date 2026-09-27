@@ -1,0 +1,14 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: Schedule
+metadata:
+  name: redis-recurring-pod-kill
+  namespace: default
+spec:
+  schedule: '@every 1m'
+  type: 'PodChaos'
+  podChaos:
+    action: pod-kill
+    mode: one
+    selector:
+      labelSelectors:
+        app: redis

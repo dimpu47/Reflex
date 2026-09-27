@@ -2,6 +2,8 @@
 bin/
 reflex
 reflex.exe
+reflex.tar
+reflex-state.db/
 
 # Go
 vendor/
@@ -16,6 +18,12 @@ __pycache__/
 venv/
 env/
 .env
+
+# Runtime state
+data/
+
+# JIT-generated runbooks (coder agent output, <domain>_<unixtime>.wasm)
+scripts/*_[0-9]*.wasm
 
 # OS
 .DS_Store

@@ -14,7 +14,7 @@ func NewMockClient() *MockClient {
 	return &MockClient{}
 }
 
-// Evaluate simulates a Jev API response.
+// Evaluate simulates an AI Provider API response.
 func (m *MockClient) Evaluate(ctx context.Context, req EvaluationRequest) (*EvaluationResponse, error) {
 	// Simulate network latency (between 10ms and 60ms)
 	time.Sleep(time.Duration(10+rand.Intn(50)) * time.Millisecond)

@@ -14,5 +14,5 @@ spec:
   receivers:
   - name: 'reflex-webhook'
     webhookConfigs:
-    - url: 'http://host.k3d.internal:8080/webhook'
+    - url: 'http://reflex.default.svc:8080/webhook'
       sendResolved: true

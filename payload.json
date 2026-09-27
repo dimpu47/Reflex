@@ -1,7 +1,18 @@
 {
-  "id": "test-alert-1",
-  "service_name": "redis",
+  "id": "alert-network-001",
+  "service_name": "sample-app",
   "payload": {
-    "status": "firing"
+    "alertname": "ServiceUnreachable",
+    "status": "firing",
+    "severity": "critical",
+    "summary": "sample-app pod is failing to reach downstream dependencies with connection timeouts",
+    "labels": {
+      "namespace": "default",
+      "deployment": "sample-app",
+      "job": "sample-app"
+    },
+    "annotations": {
+      "description": "sample-app has been returning 503s for 2 minutes. DNS resolution is failing for internal service endpoints. Network policy may be blocking egress traffic."
+    }
   }
 }

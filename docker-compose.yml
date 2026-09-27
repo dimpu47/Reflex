@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  reflex:
+    build: .
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    environment:
+      - JEV_API_KEY=${JEV_API_KEY:-""}
+      - ROUTING_MIN_CONFIDENCE=0.60
+      - ROUTING_MAX_SEVERITY=8.0
+      - ESCALATION_WEBHOOK_URL=${ESCALATION_WEBHOOK_URL:-""}
+    # Note: KUBECONFIG must be mounted or ServiceAccount token mounted 
+    # to access the Kubernetes API for CRD/ConfigMap state backend.
+    volumes:
+      - ~/.kube:/root/.kube:ro

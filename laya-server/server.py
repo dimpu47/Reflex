@@ -1,4 +1,10 @@
 import json
+import os
+
+# Fix Huggingface symlink privilege errors on Windows
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Dict, Any, List

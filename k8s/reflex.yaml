@@ -1,0 +1,84 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: reflex-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: reflex-cluster-role
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: reflex-cluster-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: reflex-cluster-role
+subjects:
+- kind: ServiceAccount
+  name: reflex-sa
+  namespace: default
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reflex
+  namespace: default
+  labels:
+    app: reflex
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reflex
+  template:
+    metadata:
+      labels:
+        app: reflex
+    spec:
+      serviceAccountName: reflex-sa
+      containers:
+      - name: reflex
+        image: localhost/reflex:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+          name: webhook
+        - containerPort: 9090
+          name: wasm
+        env:
+        - name: ROUTING_MIN_CONFIDENCE
+          value: "0.60"
+        - name: ROUTING_MAX_SEVERITY
+          value: "8.0"
+        - name: OLLAMA_HOST
+          value: "http://172.25.81.153:11435"
+        - name: AI_API_ENDPOINT
+          value: "http://172.25.81.153:11435/api/generate"
+        - name: REFLEX_ENV
+          value: "staging"
+        - name: REFLEX_RELIABILITY_THRESHOLD
+          value: "0.99"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reflex
+  namespace: default
+spec:
+  selector:
+    app: reflex
+  ports:
+  - name: webhook
+    port: 8080
+    targetPort: 8080
+  - name: wasm
+    port: 9090
+    targetPort: 9090
