@@ -1,0 +1,50 @@
+# Alerting rules that drive Reflex.
+#
+# These must be real signals. A previous version used
+#   absent(up{job="redis"}) or up{job="redis"} == 0
+# but no ServiceMonitor ever scraped the redis job, so absent() was
+# permanently true and RedisDown fired forever regardless of redis health.
+# Everything below is derived from kube-state-metrics, which the
+# kube-prometheus-stack already scrapes, so no extra scrape config is needed.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: reflex-rules
+  namespace: default
+  labels:
+    release: prometheus
+spec:
+  groups:
+  - name: reflex-alerts
+    rules:
+    # Sustained unavailability of the redis Deployment. This is a real
+    # signal: it only fires while replicas_available is genuinely below spec.
+    - alert: RedisDown
+      expr: |
+        kube_deployment_spec_replicas{namespace="default", deployment="redis"} > 0
+        and
+        kube_deployment_status_replicas_available{namespace="default", deployment="redis"}
+          < kube_deployment_spec_replicas{namespace="default", deployment="redis"}
+      for: 30s
+      labels:
+        severity: critical
+        service: redis
+      annotations:
+        summary: "Redis Deployment has unavailable replicas"
+        description: "deploy/redis in namespace default has had fewer available replicas than desired for 30s."
+
+    # Genuine sample-app unavailability, mapped to the `application` domain
+    # so the application runbook DAG is exercised.
+    - alert: SampleAppDown
+      expr: |
+        kube_deployment_spec_replicas{namespace="default", deployment="sample-app"} > 0
+        and
+        kube_deployment_status_replicas_available{namespace="default", deployment="sample-app"}
+          < kube_deployment_spec_replicas{namespace="default", deployment="sample-app"}
+      for: 30s
+      labels:
+        severity: critical
+        service: sample-app
+      annotations:
+        summary: "sample-app Deployment has unavailable replicas"
+        description: "deploy/sample-app in namespace default has had fewer available replicas than desired for 30s."

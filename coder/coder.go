@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -17,16 +19,32 @@ import (
 func GenerateAndCompile(ctx context.Context, domain string, alertState string) (string, error) {
 	fmt.Printf("🧑‍💻 [Coder Agent] Generating Go Wasm Runbook for domain: %s...\n", domain)
 
-	prompt := fmt.Sprintf(`You are an autonomous SRE agent writing a Go runbook to compile to WebAssembly (wasi).
-The runbook is meant to remediate the following alert state:
+	prompt := fmt.Sprintf(`You are an autonomous SRE agent writing a Go runbook that will be compiled to WebAssembly (GOOS=wasip1) and executed inside a sandbox.
+
+Remediate this alert state:
 %s
 
-You MUST use the exported host function:
-//go:wasmimport env kubectl_exec
-func kubectlExec(ptr uint32, len uint32) uint32
+The ONLY capability granted to your runbook is a host function. You MUST declare it exactly like this, including the //go:wasmimport comment, the underscore in the import name, and the module name "env":
 
-Write a complete Go main package that determines the exact kubectl command to run based on the context, calls kubectlExec, and exits. 
-Only output valid Go code. Do not output markdown code blocks. Start directly with "package main".`, alertState)
+//go:wasmimport env kubectl_exec
+func kubectlExec(ptr uint32, length uint32) uint32
+
+Without that exact comment the module will fail to link. Do not rename it, do not drop the comment, and do not import os/exec or net.
+
+To pass a command to the host, copy the string into linear memory and hand over the pointer and length:
+
+b := []byte("kubectl rollout restart deploy/my-service")
+ptr := uint32(uintptr(unsafe.Pointer(&b[0])))
+rc := kubectlExec(ptr, uint32(len(b)))
+
+Requirements:
+- Start the file with "package main" and a "//go:build wasip1" constraint.
+- Import only "fmt", "os" and "unsafe".
+- Derive the kubectl target from the alert state above.
+- If the host returns a non-zero code, print the code and call os.Exit with it so the engine triggers a rollback.
+- Emit a complete, compilable Go main package.
+
+Output ONLY raw Go source. No markdown fences, no commentary.`, alertState)
 
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"model":  "qwen2.5-coder:7b", // Fast local coder model
@@ -70,19 +88,21 @@ Only output valid Go code. Do not output markdown code blocks. Start directly wi
 	if err != nil {
 		return "", err
 	}
-	// Note: In production we would clean this up, but for testing we leave it so the engine can read it if needed.
-	
+	defer os.RemoveAll(tmpDir)
+
 	goFilePath := filepath.Join(tmpDir, "main.go")
-	if err := os.WriteFile(goFilePath, []byte(rawGoCode), 0644); err != nil {
+	if err := os.WriteFile(goFilePath, []byte(rawGoCode), 0600); err != nil {
 		return "", err
 	}
 
-	// 2. Compile to WASM using Go 1.21+ wasip1 target
-	wasmFileName := fmt.Sprintf("%s_%d.wasm", domain, time.Now().Unix())
+	// 2. Compile to WASM using the wasip1 target
+	wasmFileName := fmt.Sprintf("%s_%d.wasm", nonAlnum.ReplaceAllString(domain, "-"), time.Now().Unix())
 	wasmFilePath := filepath.Join("scripts", wasmFileName) // scripts directory is served as the registry
 	
 	// Ensure scripts dir exists
-	os.MkdirAll("scripts", 0755)
+	if err := os.MkdirAll("scripts", 0755); err != nil {
+		return "", err
+	}
 
 	fmt.Printf("🔨 [JIT Compiler] Compiling %s to %s (GOOS=wasip1 GOARCH=wasm)...\n", goFilePath, wasmFilePath)
 	
@@ -92,9 +112,30 @@ Only output valid Go code. Do not output markdown code blocks. Start directly wi
 	
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		os.Remove(wasmFilePath) // don't leave a truncated artifact in the registry
 		return "", fmt.Errorf("WASM compilation failed: %v\nOutput: %s", err, string(out))
 	}
 
-	fmt.Printf("✅ [JIT Compiler] Successfully compiled %s\n", wasmFileName)
+	// 3. Sanity-check the artifact before handing it to the engine. A
+	// zero-length or non-wasm file would otherwise be served from the
+	// registry and fail confusingly at execution time.
+	info, err := os.Stat(wasmFilePath)
+	if err != nil || info.Size() < 8 {
+		return "", fmt.Errorf("JIT compiler produced no usable artifact")
+	}
+	f, err := os.Open(wasmFilePath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	magic := make([]byte, 4)
+	if _, err := io.ReadFull(f, magic); err != nil || string(magic) != "\x00asm" {
+		os.Remove(wasmFilePath)
+		return "", fmt.Errorf("JIT compiler output is not a valid Wasm module")
+	}
+
+	fmt.Printf("✅ [JIT Compiler] Compiled and verified %s (%d bytes)\n", wasmFileName, info.Size())
 	return wasmFilePath, nil
 }
+
+var nonAlnum = regexp.MustCompile(`[^a-z0-9._-]+`)

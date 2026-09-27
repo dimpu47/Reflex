@@ -2,12 +2,15 @@ package runbooks
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,10 +19,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/open-policy-agent/opa/rego"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	
 	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 	"gopkg.in/yaml.v3"
 
@@ -70,75 +75,48 @@ type Engine struct {
 	config Config
 	k8s    *kubernetes.Clientset
 	ctx    context.Context
+	cancel context.CancelFunc
 
 	wasmRuntime wazero.Runtime
 	wasmCache   sync.Map // map[string]wazero.CompiledModule
 	MemoryStore *memory.Store
-	
+
+	regoQuery rego.PreparedEvalQuery
+	regoErr   error
+
 	PendingApprovals sync.Map // map[string]chan bool
 }
 
+// NewEngine builds a runbook engine. k8s may be nil, in which case DAG
+// checkpointing and the orphan watcher are disabled.
 func NewEngine(k8s *kubernetes.Clientset, memStore *memory.Store) *Engine {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 	r := wazero.NewRuntime(ctx)
 	wasi_snapshot_preview1.MustInstantiate(ctx, r)
-
-	// Export Host Functions to WebAssembly to allow K8s mutation
-	_, err := r.NewHostModuleBuilder("env").
-		NewFunctionBuilder().
-		WithFunc(func(ctx context.Context, cmdPtr, cmdLen uint32) uint32 {
-			// Memory reading logic would go here to extract the command string
-			// For simulation, we assume the command extracted is:
-			simulatedCommand := "kubectl rollout restart deploy/redis"
-			
-			// 1. Parse command for OPA evaluation
-			parts := strings.Split(simulatedCommand, " ")
-			if len(parts) < 4 {
-				fmt.Printf("   %s❌ [OPA-Deny] Invalid kubectl format%s\n", ColorRed, ColorReset)
-				return 1 // Error
-			}
-			action := parts[1] // rollout
-			resource := parts[2] // restart
-			target := parts[3] // deploy/redis
-
-			// 2. Evaluate against OPA Rego policy
-			input := map[string]interface{}{
-				"action": action,
-				"resource": resource,
-				"target": target,
-			}
-			
-			query, err := rego.New(
-				rego.Query("data.reflex.authz.allow"),
-				rego.Load([]string{"policy.rego"}, nil),
-			).PrepareForEval(ctx)
-			
-			if err != nil {
-				fmt.Printf("   %s❌ [OPA-Error] Failed to prepare Rego query: %v%s\n", ColorRed, err, ColorReset)
-				return 1
-			}
-
-			rs, err := query.Eval(ctx, rego.EvalInput(input))
-			if err != nil || len(rs) == 0 || !rs[0].Expressions[0].Value.(bool) {
-				fmt.Printf("   %s🛑 [OPA-DENY] Command rejected by security policy: %s%s\n", ColorRed, simulatedCommand, ColorReset)
-				return 1 // Permission Denied
-			}
-
-			fmt.Printf("   %s✅ [OPA-ALLOW] Executing permitted host binary: %s%s\n", ColorGreen, simulatedCommand, ColorReset)
-			return 0
-		}).Export("kubectl_exec").
-		Instantiate(ctx)
-	
-	if err != nil {
-		panic(fmt.Errorf("failed to instantiate host module: %w", err))
-	}
 
 	engine := &Engine{
 		config:      Config{Runbooks: make(map[string]Runbook)},
 		k8s:         k8s,
 		ctx:         ctx,
+		cancel:      cancel,
 		wasmRuntime: r,
 		MemoryStore: memStore,
+	}
+
+	// Prepare the OPA query once. Re-preparing on every host call re-parses
+	// policy.rego from disk, which is both slow and a needless failure mode.
+	engine.regoQuery, engine.regoErr = prepareAuthzQuery(ctx)
+
+	// Export the host function that lets sandboxed runbooks request a
+	// Kubernetes mutation. This is the only way a Wasm module can affect the
+	// cluster, and every request is checked against policy.rego first.
+	_, err := r.NewHostModuleBuilder("env").
+		NewFunctionBuilder().
+		WithFunc(engine.kubectlExec).
+		Export("kubectl_exec").
+		Instantiate(ctx)
+	if err != nil {
+		panic(fmt.Errorf("failed to instantiate host module: %w", err))
 	}
 
 	data, err := os.ReadFile("runbooks.yaml")
@@ -152,45 +130,186 @@ func NewEngine(k8s *kubernetes.Clientset, memStore *memory.Store) *Engine {
 		fmt.Printf("⚠️  Could not read runbooks.yaml: %v (Using defaults)\n", err)
 	}
 
-	if k8s != nil {
-		go engine.StartOrphanWatcher()
-	}
-
 	return engine
 }
 
-func (e *Engine) saveState(state *RunbookState) {
+// prepareAuthzQuery compiles policy.rego into a reusable query object.
+func prepareAuthzQuery(ctx context.Context) (rego.PreparedEvalQuery, error) {
+	policyPath := os.Getenv("REFLEX_POLICY_PATH")
+	if policyPath == "" {
+		policyPath = "policy.rego"
+	}
+	return rego.New(
+		rego.Query("data.reflex.authz.allow"),
+		rego.Load([]string{policyPath}, nil),
+	).PrepareForEval(ctx)
+}
+
+// kubectlExec is the host-side implementation of the `env.kubectl_exec`
+// import exposed to sandboxed runbooks.
+//
+// The command string is read out of the guest's linear memory, split into
+// argv, checked against policy.rego, checked against a hard allowlist, and
+// only then executed. Returning 0 means the command actually ran and exited
+// cleanly; any non-zero value fails the calling DAG step and triggers the
+// compensating rollback.
+func (e *Engine) kubectlExec(ctx context.Context, mod api.Module, cmdPtr, cmdLen uint32) uint32 {
+	// 1. Read the requested command out of guest memory.
+	mem := mod.Memory()
+	if mem == nil {
+		fmt.Printf("   %s❌ [HOST] Guest exported no memory; cannot read command%s\n", ColorRed, ColorReset)
+		return 1
+	}
+	// Guard the read against out-of-bounds offsets without overflowing.
+	memSize := mem.Size()
+	if cmdLen > memSize || cmdPtr > memSize-cmdLen {
+		fmt.Printf("   %s❌ [HOST] Command buffer out of bounds (ptr=%d len=%d, mem=%d)%s\n", ColorRed, cmdPtr, cmdLen, memSize, ColorReset)
+		return 1
+	}
+	raw, ok := mem.Read(cmdPtr, cmdLen)
+	if !ok {
+		fmt.Printf("   %s❌ [HOST] Failed to read command from guest memory%s\n", ColorRed, ColorReset)
+		return 1
+	}
+
+	command := strings.TrimSpace(string(raw))
+	if command == "" {
+		return 1
+	}
+
+	argv := strings.Fields(command)
+	if len(argv) < 3 {
+		fmt.Printf("   %s❌ [OPA-DENY] Malformed command: %q%s\n", ColorRed, command, ColorReset)
+		return 1
+	}
+
+	// 2. Hard allowlist. policy.rego expresses operator intent; this is the
+	// engine-level floor that no policy can talk its way past.
+	allowedVerbs := map[string]bool{"rollout": true, "delete": true, "scale": true}
+	if !allowedVerbs[argv[1]] {
+		fmt.Printf("   %s🛑 [ALLOWLIST-DENY] kubectl verb %q is not permitted%s\n", ColorRed, argv[1], ColorReset)
+		return 1
+	}
+
+	// 3. OPA policy check against the real command.
+	if e.regoErr != nil {
+		fmt.Printf("   %s❌ [OPA-ERROR] Authz policy unavailable, failing closed: %v%s\n", ColorRed, e.regoErr, ColorReset)
+		return 1
+	}
+	input := map[string]interface{}{
+		"action":   argv[1],
+		"resource": argv[2],
+		"target":   strings.Join(argv[3:], " "),
+	}
+	rs, err := e.regoQuery.Eval(ctx, rego.EvalInput(input))
+	if err != nil || len(rs) == 0 {
+		fmt.Printf("   %s❌ [OPA-ERROR] Policy evaluation failed for %q: %v%s\n", ColorRed, command, err, ColorReset)
+		return 1
+	}
+	allowed, ok := rs[0].Expressions[0].Value.(bool)
+	if !ok || !allowed {
+		fmt.Printf("   %s🛑 [OPA-DENY] Command rejected by security policy: %s%s\n", ColorRed, command, ColorReset)
+		return 1
+	}
+
+	// 4. Execute for real.
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	out, execErr := cmd.CombinedOutput()
+	if execErr != nil {
+		fmt.Printf("   %s❌ [EXEC-FAIL] %s -> %v %s%s\n", ColorRed, command, execErr, strings.TrimSpace(string(out)), ColorReset)
+		return 1
+	}
+	fmt.Printf("   %s✅ [EXEC-OK] %s%s\n", ColorGreen, command, ColorReset)
+	if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+		fmt.Printf("      %s\n", trimmed)
+	}
+	return 0
+}
+
+// dagConfigMapName builds a valid RFC-1123 ConfigMap name for an alert ID.
+//
+// Alert IDs are not guaranteed to be DNS-safe: Alertmanager fingerprints are
+// hex, but the native schema accepts arbitrary strings, and an empty ID
+// previously produced "reflex-dag-", which the API server rejects outright.
+// Slugify, bound the length, and append a hash of the original so distinct
+// IDs can never collide after truncation.
+func dagConfigMapName(alertID string) string {
+	slug := strings.ToLower(alertID)
+	slug = nonAlnum.ReplaceAllString(slug, "-")
+	slug = strings.Trim(slug, "-")
+	if slug == "" {
+		slug = "alert"
+	}
+	if len(slug) > 40 {
+		slug = strings.Trim(slug[:40], "-")
+	}
+	sum := sha256.Sum256([]byte(alertID))
+	return fmt.Sprintf("reflex-dag-%s-%s", slug, hex.EncodeToString(sum[:4]))
+}
+
+var nonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
+
+// checkpoint persists state and reports persistence failures without
+// aborting the in-flight DAG. Losing a checkpoint degrades crash recovery but
+// should not itself fail the remediation.
+func (e *Engine) checkpoint(state *RunbookState) {
+	if err := e.saveState(state); err != nil {
+		fmt.Printf("   %s⚠️  [CHECKPOINT-FAIL] %v%s\n", ColorYellow, err, ColorReset)
+	}
+}
+
+// saveState persists DAG state to a ConfigMap. Errors are surfaced rather
+// than swallowed: a silently dropped checkpoint means crash recovery has no
+// state to adopt, which is worse than a loud failure.
+func (e *Engine) saveState(state *RunbookState) error {
 	if e.k8s == nil {
-		return
+		return nil
 	}
 	state.LastHeartbeat = time.Now().Unix()
-	data, _ := json.Marshal(state)
-	
-	cmName := fmt.Sprintf("reflex-dag-%s", strings.ToLower(state.AlertID))
-	cmClient := e.k8s.CoreV1().ConfigMaps("default")
-	
-	cm, err := cmClient.Get(e.ctx, cmName, metav1.GetOptions{})
+	data, err := json.Marshal(state)
 	if err != nil {
-		// Create
+		return fmt.Errorf("marshal dag state: %w", err)
+	}
+
+	cmName := dagConfigMapName(state.AlertID)
+	cmClient := e.k8s.CoreV1().ConfigMaps("default")
+
+	cm, err := cmClient.Get(e.ctx, cmName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
 		newCm := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: cmName,
 				Labels: map[string]string{
-					"reflex.io/type": "dag-state",
+					"reflex.io/type":   "dag-state",
 					"reflex.io/status": state.Status,
+					"reflex.io/alert":  nonAlnum.ReplaceAllString(strings.ToLower(state.AlertID), "-"),
 				},
 			},
 			Data: map[string]string{
 				"state": string(data),
 			},
 		}
-		cmClient.Create(e.ctx, newCm, metav1.CreateOptions{})
-	} else {
-		// Update
-		cm.Data["state"] = string(data)
-		cm.Labels["reflex.io/status"] = state.Status
-		cmClient.Update(e.ctx, cm, metav1.UpdateOptions{})
+		if _, err := cmClient.Create(e.ctx, newCm, metav1.CreateOptions{}); err != nil {
+			return fmt.Errorf("create configmap %s: %w", cmName, err)
+		}
+		return nil
 	}
+	if err != nil {
+		return fmt.Errorf("get configmap %s: %w", cmName, err)
+	}
+
+	if cm.Data == nil {
+		cm.Data = map[string]string{}
+	}
+	if cm.Labels == nil {
+		cm.Labels = map[string]string{}
+	}
+	cm.Data["state"] = string(data)
+	cm.Labels["reflex.io/status"] = state.Status
+	if _, err := cmClient.Update(e.ctx, cm, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("update configmap %s: %w", cmName, err)
+	}
+	return nil
 }
 
 func (e *Engine) StartOrphanWatcher() {
@@ -247,7 +366,7 @@ func (e *Engine) scanAndAdoptOrphans() {
 					
 					e.rollback(state.CompletedSteps)
 					state.Status = "rolled_back_orphan"
-					e.saveState(&state)
+					e.checkpoint(&state)
 				}
 			}
 		}
@@ -348,7 +467,7 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 		Domain:  domain,
 		Status:  "running",
 	}
-	e.saveState(&state)
+	e.checkpoint(&state)
 
 	doneChan := make(chan bool)
 	if e.k8s != nil {
@@ -358,7 +477,7 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 			for {
 				select {
 				case <-ticker.C:
-					e.saveState(&state)
+					e.checkpoint(&state)
 				case <-doneChan:
 					return
 				}
@@ -381,16 +500,17 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 			e.rollback(state.CompletedSteps)
 			
 			state.Status = "rolled_back"
-			e.saveState(&state)
+			e.checkpoint(&state)
 			metrics.RemediationsTotal.WithLabelValues("rolled_back").Inc()
 
 			// Save failure outcome to memory for future RAG prevention
 			if e.MemoryStore != nil {
 				go func(alertState []byte) {
 					emb, _ := memory.GetEmbedding(context.Background(), string(alertState))
-					e.MemoryStore.SaveOutcome(memory.Incident{
-						ID:         alert.ID,
-						AlertState: string(alertState),
+				e.MemoryStore.SaveOutcome(memory.Incident{
+					ID:         alert.ID,
+					Domain:     domain,
+					AlertState: string(alertState),
 						Resolution: fmt.Sprintf("Failed at step: %s", step.Name),
 						Outcome:    "failure",
 						Embedding:  emb,
@@ -403,7 +523,7 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 		}
 		
 		state.CompletedSteps = append(state.CompletedSteps, step)
-		e.saveState(&state)
+		e.checkpoint(&state)
 	}
 	
 	if e.k8s != nil {
@@ -412,7 +532,7 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 	fmt.Printf("   %s🎉 DAG Auto-Remediation Complete!%s\n", ColorGreen, ColorReset)
 	
 	state.Status = "completed"
-	e.saveState(&state)
+	e.checkpoint(&state)
 	metrics.RemediationsTotal.WithLabelValues("success").Inc()
 
 	// Save success outcome to memory for future RAG
@@ -421,6 +541,7 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 			emb, _ := memory.GetEmbedding(context.Background(), string(alertState))
 			e.MemoryStore.SaveOutcome(memory.Incident{
 				ID:         alert.ID,
+				Domain:     domain,
 				AlertState: string(alertState),
 				Resolution: fmt.Sprintf("Successfully executed runbook for domain %s", domain),
 				Outcome:    "success",

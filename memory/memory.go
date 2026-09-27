@@ -11,12 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 )
 
 // Incident represents a past remediation outcome
 type Incident struct {
 	ID          string    `json:"id"`
+	Domain      string    `json:"domain"`
 	AlertState  string    `json:"alert_state"`
 	Resolution  string    `json:"resolution"`
 	Outcome     string    `json:"outcome"` // "success" or "failure"
@@ -195,17 +197,22 @@ func GetEmbedding(ctx context.Context, text string) ([]float64, error) {
 // GetReliabilityScore returns the empirical success rate for a given domain.
 // It scans all stored incidents for the domain and computes successes/total.
 // Returns 0.0 if no data exists (unproven).
+//
+// This previously compared AlertState (the raw alert JSON) against the
+// domain string, which could never be equal, so the score was permanently
+// 0.0 and the production gate blocked every runbook forever.
 func (s *Store) GetReliabilityScore(domain string) float64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var total, successes float64
 	for _, inc := range s.incidents {
-		if inc.AlertState == domain {
-			total++
-			if inc.Outcome == "success" {
-				successes++
-			}
+		if !strings.EqualFold(inc.Domain, domain) {
+			continue
+		}
+		total++
+		if inc.Outcome == "success" {
+			successes++
 		}
 	}
 	if total == 0 {

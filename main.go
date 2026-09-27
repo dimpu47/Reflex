@@ -155,7 +155,10 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	// 3. Start Orphan Watcher with Leader Election
+	// 3. Start Orphan Watcher with Leader Election.
+	// The watcher is started ONLY here. It used to also be started inside
+	// runbooks.NewEngine, which meant every replica ran it and leader
+	// election was defeated by its own constructor.
 	if k8sClient != nil {
 		go func() {
 			lock := &resourcelock.LeaseLock{
@@ -256,22 +259,52 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(pending)
 	})
+
+	// resolveApproval signals a waiting DAG and reports whether a consumer
+	// was still listening. The send used to be a bare blocking channel op,
+	// which would hang the HTTP handler forever if the DAG had already
+	// exited between the Load and the send.
+	resolveApproval := func(ctx context.Context, id string, approved bool) (bool, error) {
+		v, ok := runbookEngine.PendingApprovals.Load(id)
+		if !ok {
+			return false, nil
+		}
+		ch, ok := v.(chan bool)
+		if !ok {
+			return false, fmt.Errorf("unexpected approval channel type")
+		}
+		select {
+		case ch <- approved:
+			return true, nil
+		case <-time.After(5 * time.Second):
+			return false, fmt.Errorf("no DAG is waiting on approval for %s", id)
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
+
 	mux.HandleFunc("/approve", func(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Query().Get("id")
-		if ch, ok := runbookEngine.PendingApprovals.Load(id); ok {
-			ch.(chan bool) <- true
+		ok, err := resolveApproval(r.Context(), id, true)
+		switch {
+		case err != nil:
+			http.Error(w, err.Error(), http.StatusConflict)
+		case !ok:
+			http.Error(w, "No pending approval with that id", http.StatusNotFound)
+		default:
 			w.WriteHeader(http.StatusOK)
-		} else {
-			http.Error(w, "Not found", 404)
 		}
 	})
 	mux.HandleFunc("/deny", func(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Query().Get("id")
-		if ch, ok := runbookEngine.PendingApprovals.Load(id); ok {
-			ch.(chan bool) <- false
+		ok, err := resolveApproval(r.Context(), id, false)
+		switch {
+		case err != nil:
+			http.Error(w, err.Error(), http.StatusConflict)
+		case !ok:
+			http.Error(w, "No pending approval with that id", http.StatusNotFound)
+		default:
 			w.WriteHeader(http.StatusOK)
-		} else {
-			http.Error(w, "Not found", 404)
 		}
 	})
 
