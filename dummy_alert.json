@@ -5,12 +5,14 @@
       "status": "firing",
       "labels": {
         "alertname": "RedisDown",
-        "severity": "critical"
+        "severity": "low",
+        "service": "database"
       },
       "annotations": {
-        "summary": "Test Redis Down"
+        "summary": "Redis cache is slightly unresponsive. A restart always fixes this automatically.",
+        "auto_recoverable_probability": "0.99"
       },
-      "fingerprint": "alert-test-12345"
+      "fingerprint": "alert-test-highly-recoverable"
     }
   ]
 }

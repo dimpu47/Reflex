@@ -421,29 +421,30 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 			},
 		}
 
-		env := os.Getenv("REFLEX_ENV")
-		if env == "" {
-			env = "production" // default to safest mode
-		}
+	}
 
-		if env == "production" {
-			// ─── PRODUCTION: ALWAYS require human approval before executing JIT runbooks ───
-			fmt.Printf("   %s⏸️  [PROD-HITL] Production environment detected. Human approval required before executing JIT runbook.%s\n", ColorYellow, ColorReset)
-			fmt.Printf("   %s         Run: 'reflex approve %s' to approve or 'reflex deny %s' to reject%s\n", ColorYellow, alert.ID, alert.ID, ColorReset)
-			approvalChan := make(chan bool)
-			e.PendingApprovals.Store(alert.ID, approvalChan)
-			approved := <-approvalChan
-			e.PendingApprovals.Delete(alert.ID)
-			if !approved {
-				fmt.Printf("   %s🛑 Human denied execution. Escalating.%s\n", ColorRed, ColorReset)
-				e.Escalate(alert, eval)
-				return
-			}
-			fmt.Printf("   %s▶️  Human approved! Executing in production.%s\n", ColorGreen, ColorReset)
-		} else {
-			// ─── NON-PROD (staging/test/dev): auto-execute, no approval needed ───
-			fmt.Printf("   %s🧪 [%s] Non-production environment. Auto-executing JIT runbook (no approval needed).%s\n", ColorCyan, strings.ToUpper(env), ColorReset)
+	env := os.Getenv("REFLEX_ENV")
+	if env == "" {
+		env = "production" // default to safest mode
+	}
+
+	if env == "production" {
+		// ─── PRODUCTION: ALWAYS require human approval before executing runbooks ───
+		fmt.Printf("   %s⏸️  [PROD-HITL] Production environment detected. Human approval required before executing runbook.%s\n", ColorYellow, ColorReset)
+		fmt.Printf("   %s         Approve via Web UI or run: 'reflex approve %s'%s\n", ColorYellow, alert.ID, ColorReset)
+		approvalChan := make(chan bool)
+		e.PendingApprovals.Store(alert.ID, approvalChan)
+		approved := <-approvalChan
+		e.PendingApprovals.Delete(alert.ID)
+		if !approved {
+			fmt.Printf("   %s🛑 Human denied execution. Escalating.%s\n", ColorRed, ColorReset)
+			e.Escalate(alert, eval)
+			return
 		}
+		fmt.Printf("   %s▶️  Human approved! Executing in production.%s\n", ColorGreen, ColorReset)
+	} else {
+		// ─── NON-PROD (staging/test/dev): auto-execute, no approval needed ───
+		fmt.Printf("   %s🧪 [%s] Non-production environment. Auto-executing runbook (no approval needed).%s\n", ColorCyan, strings.ToUpper(env), ColorReset)
 	}
 
 	state := RunbookState{
