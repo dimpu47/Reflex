@@ -38,7 +38,7 @@ ptr := uint32(uintptr(unsafe.Pointer(&b[0])))
 rc := kubectlExec(ptr, uint32(len(b)))
 
 Requirements:
-- Start the file with "package main" and a "//go:build wasip1" constraint.
+- Start the file with a "//go:build wasip1" constraint, followed by a blank line, and then "package main".
 - Import only "fmt", "os" and "unsafe".
 - Derive the kubectl target from the alert state above.
 - If the host returns a non-zero code, print the code and call os.Exit with it so the engine triggers a rollback.
@@ -47,7 +47,7 @@ Requirements:
 Output ONLY raw Go source. No markdown fences, no commentary.`, alertState)
 
 	reqBody, _ := json.Marshal(map[string]interface{}{
-		"model":  "qwen2.5-coder:7b", // Fast local coder model
+		"model":  "gemma4:latest", // Use available local model
 		"prompt": prompt,
 		"stream": false,
 	})
@@ -72,16 +72,28 @@ Output ONLY raw Go source. No markdown fences, no commentary.`, alertState)
 		return "", err
 	}
 
-	rawGoCode := strings.TrimSpace(llmResp.Response)
-	// Strip markdown if the LLM leaked it
-	rawGoCode = strings.TrimPrefix(rawGoCode, "```go")
-	rawGoCode = strings.TrimPrefix(rawGoCode, "```")
-	rawGoCode = strings.TrimSuffix(rawGoCode, "```")
+	raw := strings.TrimSpace(llmResp.Response)
+	fmt.Printf("   📝 [Coder Agent] Raw LLM response (first 200 chars): %s\n", func() string {
+		if len(raw) > 200 { return raw[:200] + "..." }
+		return raw
+	}())
+
+	// Robustly extract Go code: find "package main" regardless of markdown wrapping
+	rawGoCode := raw
+	if idx := strings.Index(raw, "package main"); idx > 0 {
+		rawGoCode = raw[idx:]
+	}
+	// Strip any trailing markdown fence
+	if end := strings.LastIndex(rawGoCode, "\x60\x60\x60"); end > 0 {
+		rawGoCode = strings.TrimSpace(rawGoCode[:end])
+	}
 	rawGoCode = strings.TrimSpace(rawGoCode)
 
 	if !strings.HasPrefix(rawGoCode, "package main") {
+		fmt.Printf("   ❌ [Coder Agent] Could not extract valid Go package. Full response:\n%s\n", raw)
 		return "", fmt.Errorf("LLM did not return a valid Go main package")
 	}
+	fmt.Printf("   ✅ [Coder Agent] Extracted %d bytes of Go source code.\n", len(rawGoCode))
 
 	// 1. Write the Go file to disk
 	tmpDir, err := os.MkdirTemp("", "reflex-coder-*")

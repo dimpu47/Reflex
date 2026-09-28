@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -426,39 +425,24 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 		if env == "" {
 			env = "production" // default to safest mode
 		}
-		thresholdStr := os.Getenv("REFLEX_RELIABILITY_THRESHOLD")
-		reliabilityThreshold := 0.99
-		if thresholdStr != "" {
-			if v, err := strconv.ParseFloat(thresholdStr, 64); err == nil {
-				reliabilityThreshold = v
-			}
-		}
 
-		if env == "staging" || env == "test" {
-			// ─── STAGING / TEST: auto-execute for chaos testing inoculation ───
-			fmt.Printf("   %s🧪 [%s] Auto-executing JIT runbook (chaos inoculation mode — no approval needed)%s\n", ColorCyan, strings.ToUpper(env), ColorReset)
+		if env == "production" {
+			// ─── PRODUCTION: ALWAYS require human approval before executing JIT runbooks ───
+			fmt.Printf("   %s⏸️  [PROD-HITL] Production environment detected. Human approval required before executing JIT runbook.%s\n", ColorYellow, ColorReset)
+			fmt.Printf("   %s         Run: 'reflex approve %s' to approve or 'reflex deny %s' to reject%s\n", ColorYellow, alert.ID, alert.ID, ColorReset)
+			approvalChan := make(chan bool)
+			e.PendingApprovals.Store(alert.ID, approvalChan)
+			approved := <-approvalChan
+			e.PendingApprovals.Delete(alert.ID)
+			if !approved {
+				fmt.Printf("   %s🛑 Human denied execution. Escalating.%s\n", ColorRed, ColorReset)
+				e.Escalate(alert, eval)
+				return
+			}
+			fmt.Printf("   %s▶️  Human approved! Executing in production.%s\n", ColorGreen, ColorReset)
 		} else {
-			// ─── PRODUCTION: gate on empirical reliability score ───
-			var score float64
-			if e.MemoryStore != nil {
-				score = e.MemoryStore.GetReliabilityScore(domain)
-			}
-			if score >= reliabilityThreshold {
-				fmt.Printf("   %s🏆 [PROD] Runbook empirically proven (%.0f%% success rate in chaos testing). Auto-executing.%s\n", ColorGreen, score*100, ColorReset)
-			} else {
-				fmt.Printf("   %s⏸️  [PROD-HITL] Runbook not yet proven for production (%.0f%% < %.0f%% required). Awaiting human approval...%s\n", ColorYellow, score*100, reliabilityThreshold*100, ColorReset)
-				fmt.Printf("   %s         Run: 'reflex approve %s' to approve or 'reflex deny %s' to reject%s\n", ColorYellow, alert.ID, alert.ID, ColorReset)
-				approvalChan := make(chan bool)
-				e.PendingApprovals.Store(alert.ID, approvalChan)
-				approved := <-approvalChan
-				e.PendingApprovals.Delete(alert.ID)
-				if !approved {
-					fmt.Printf("   %s🛑 Human denied execution. Escalating.%s\n", ColorRed, ColorReset)
-					e.Escalate(alert, eval)
-					return
-				}
-				fmt.Printf("   %s▶️  Human approved! Graduating runbook to production.%s\n", ColorGreen, ColorReset)
-			}
+			// ─── NON-PROD (staging/test/dev): auto-execute, no approval needed ───
+			fmt.Printf("   %s🧪 [%s] Non-production environment. Auto-executing JIT runbook (no approval needed).%s\n", ColorCyan, strings.ToUpper(env), ColorReset)
 		}
 	}
 

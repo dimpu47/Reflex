@@ -87,7 +87,7 @@ spec:
           value: "8.0"
         - name: ROUTING_MIN_RECOVERABLE
           value: "0.60"
-        - name: ROLLAMA_HOST
+        - name: OLLAMA_HOST
           value: "http://172.25.81.153:11435"
         - name: AI_API_ENDPOINT
           value: "http://172.25.81.153:11435/api/generate"
@@ -95,8 +95,6 @@ spec:
           value: "/app/policy.rego"
         - name: REFLEX_ENV
           value: "staging"
-        - name: REFLEX_RELIABILITY_THRESHOLD
-          value: "0.99"
 ---
 apiVersion: v1
 kind: Service
