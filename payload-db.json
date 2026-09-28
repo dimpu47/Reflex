@@ -1,0 +1,18 @@
+{
+  "id": "alert-db-001",
+  "service_name": "redis",
+  "payload": {
+    "alertname": "DatabaseConnectionsExhausted",
+    "status": "firing",
+    "severity": "critical",
+    "summary": "redis pod is out of max memory and connections",
+    "labels": {
+      "namespace": "default",
+      "deployment": "redis",
+      "job": "redis"
+    },
+    "annotations": {
+      "description": "redis connections exhausted."
+    }
+  }
+}

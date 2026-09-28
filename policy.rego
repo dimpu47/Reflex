@@ -2,10 +2,20 @@ package reflex.authz
 
 default allow = false
 
-# Example policy: ONLY allow rollout restarts of safe deployments
+# Allow rollout restart
 allow {
     input.action == "rollout"
     input.resource == "restart"
-    # To truly lock this down, we would list specific allowed targets here
-    # e.g., input.target == "deploy/redis"
+}
+
+# Allow rollout undo
+allow {
+    input.action == "rollout"
+    input.resource == "undo"
+}
+
+# Allow scale
+allow {
+    input.action == "scale"
+    startswith(input.resource, "deploy/")
 }
