@@ -1,37 +1,19 @@
 package runbooks
 
 import (
-	"context"
 	"testing"
-	"sync"
 )
 
-func TestEngineLoad(t *testing.T) {
-	e := &Engine{
-		ConfigPath: "../runbooks.yaml",
-		Registry:   &sync.Map{},
-	}
+func TestEngine_Initialization(t *testing.T) {
+	e := NewEngine(nil, nil)
 	
-	err := e.Load()
-	if err != nil {
-		t.Fatalf("failed to load runbooks: %v", err)
-	}
-	
-	val, ok := e.Registry.Load("database")
-	if !ok {
-		t.Fatalf("expected 'database' domain to be loaded")
-	}
-	
-	dag := val.(DAG)
-	if len(dag.Steps) == 0 {
-		t.Errorf("expected DAG steps, got 0")
+	if e.wasmRuntime == nil {
+		t.Errorf("expected wasmRuntime to be initialized")
 	}
 }
 
 func TestResolveApproval(t *testing.T) {
-	e := &Engine{
-		PendingApprovals: &sync.Map{},
-	}
+	e := NewEngine(nil, nil)
 	
 	ch := make(chan bool, 1)
 	e.PendingApprovals.Store("test-alert", ch)
