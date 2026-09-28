@@ -1,0 +1,1 @@
+{"status":"deprecated","error":"The Alertmanager v1 API was deprecated in version 0.16.0 and is removed as of version 0.27.0 - please use the equivalent route in the v2 API"}

@@ -561,7 +561,11 @@ func (e *Engine) Escalate(alert ingest.Alert, eval evaluator.EvaluationResponse)
 		return
 	}
 
-	payload, err := json.Marshal(alert)
+	slackMsg := map[string]interface{}{
+		"text": fmt.Sprintf("🚨 *Reflex Escalation: %s*\n*Alert ID*: %s\n*Severity*: %.1f\n*AI Domain Confidence*: %.2f\n*AI Recommendation*: Auto-remediation aborted. Human intervention required.", alert.ServiceName, alert.ID, eval.Answers.Severity.Score, eval.Answers.Domain.Confidence),
+		"alert": alert, // raw alert payload for other integrations
+	}
+	payload, err := json.Marshal(slackMsg)
 	if err != nil {
 		fmt.Printf("   %s❌ Failed to marshal alert for escalation: %v%s\n", ColorRed, err, ColorReset)
 		return

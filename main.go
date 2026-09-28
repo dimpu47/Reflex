@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/signal"
@@ -31,6 +33,9 @@ import (
 	"jev-proxy/tui"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+//go:embed ui/*
+var uiFS embed.FS
 
 func main() {
 	// 0. Intercept CLI commands
@@ -248,6 +253,10 @@ func main() {
 	}
 	mux.Handle("/webhook", handler)
 	mux.Handle("/metrics", promhttp.Handler())
+	
+	// UI Dashboard
+	uiFolder, _ := fs.Sub(uiFS, "ui")
+	mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(http.FS(uiFolder))))
 
 	// HITL endpoints
 	mux.HandleFunc("/pending", func(w http.ResponseWriter, r *http.Request) {

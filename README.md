@@ -10,7 +10,7 @@ Reflex is a high-throughput Go proxy that ingests infrastructure alerts via HTTP
 
 ## 🌟 Core Features
 
-1. **Wasm-Shield**: Secure WebAssembly runbook execution via `wazero`.
+1. **Wasm-Shield**: Secure WebAssembly runbook execution via `wazero` with strict Open Policy Agent (OPA) host-call authorization.
 2. **MoA Evaluator**: Mixture-of-Agents consensus to prevent LLM hallucinations.
 3. **Storm-Breaker**: Sliding-window deduplicator squashing "Thundering Herd" alert storms using RAG embeddings.
 4. **JIT Coder Agent**: On-the-fly autonomous Go WebAssembly generation. When Reflex encounters a failing domain it doesn't have a static runbook for, it dynamically writes, compiles, and executes a Wasm runbook using local LLMs.

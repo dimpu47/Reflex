@@ -1,0 +1,16 @@
+{
+  "status": "firing",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "RedisDown",
+        "severity": "critical"
+      },
+      "annotations": {
+        "summary": "Test Redis Down"
+      },
+      "fingerprint": "alert-test-12345"
+    }
+  ]
+}

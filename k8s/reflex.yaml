@@ -94,7 +94,7 @@ spec:
         - name: REFLEX_POLICY_PATH
           value: "/app/policy.rego"
         - name: REFLEX_ENV
-          value: "staging"
+          value: "production"
 ---
 apiVersion: v1
 kind: Service

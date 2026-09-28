@@ -172,6 +172,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
+	
+	// If it lacks native reflex fields, assume the entire body is an Alertmanager payload
+	if alert.ID == "" && alert.ServiceName == "" && alert.Payload == nil {
+		alert.Payload = body
+	}
 
 	fromAM, resolved := normalizeAlert(&alert)
 	if resolved {
