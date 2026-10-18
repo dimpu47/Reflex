@@ -18,7 +18,7 @@ Review proposed cluster mutations before execution. Inspect unified Git-style di
 ![Reflex Web UI Demo](assets/reflex_ui_demo.gif)
 
 <details>
-<summary>📸 <b>Click to expand step-by-step UI breakdown (Pause & Inspect)</b></summary>
+<summary>📸 <b>Step-by-Step UI Breakdown</b></summary>
 
 #### Tab 1: Cluster State Diff (Proposed Mutation)
 Unified git-style diff displaying current failing state in red (`-`) and proposed corrective actions in green (`+`).
@@ -42,7 +42,7 @@ From Prometheus Alertmanager webhook ingress to Wazero WebAssembly sandbox execu
 ![Reflex Cluster Lifecycle Pipeline](assets/reflex_cluster_flow.gif)
 
 <details>
-<summary>🔍 <b>Click to expand individual pipeline stages (Pause & Read each step)</b></summary>
+<summary>🔍 <b>Pipeline Stages Breakdown</b></summary>
 
 | Stage | Pipeline Milestone | Description |
 | :--- | :--- | :--- |
