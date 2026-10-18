@@ -15,8 +15,7 @@ Reflex pairs autonomous AI reasoning with an enterprise **Human-in-the-Loop (HIT
 ### 1. Web UI Operator Flow (Diffs, Pod Logs, & 1-Click Rollback)
 Review proposed cluster mutations before execution. Inspect unified Git-style diffs (`+`/`-`), stream live failing pod stdout/stderr, verify K8s events, and execute 1-click compensation rollbacks.
 
-[![Reflex Web UI Demo](assets/reflex_ui_demo.gif)](assets/reflex_ui_demo.mp4)
-> 💡 *Click image to open the [pausable MP4 video](assets/reflex_ui_demo.mp4).*
+![Reflex Web UI Demo](assets/reflex_ui_demo.gif)
 
 <details>
 <summary>📸 <b>Click to expand step-by-step UI breakdown (Pause & Inspect)</b></summary>
@@ -40,8 +39,7 @@ Audit log of completed DAGs showing per-step execution stdout, applied diffs, an
 ### 2. Kubernetes Cluster Remediation Pipeline
 From Prometheus Alertmanager webhook ingress to Wazero WebAssembly sandbox execution and distributed ConfigMap checkpointing.
 
-[![Reflex Cluster Lifecycle Pipeline](assets/reflex_cluster_flow.gif)](assets/reflex_cluster_flow.mp4)
-> 💡 *Click image to open the [pausable MP4 video](assets/reflex_cluster_flow.mp4).*
+![Reflex Cluster Lifecycle Pipeline](assets/reflex_cluster_flow.gif)
 
 <details>
 <summary>🔍 <b>Click to expand individual pipeline stages (Pause & Read each step)</b></summary>
