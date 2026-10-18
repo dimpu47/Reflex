@@ -92,7 +92,7 @@ spec:
         - name: REFLEX_ENV
           value: "production"
         - name: OLLAMA_HOST
-          value: "http://172.25.80.1:11434"
+          value: "http://ollama-service:11434"
         - name: CODER_MODEL
           value: "qwen2.5-coder:7b"
 ---

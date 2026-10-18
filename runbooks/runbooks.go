@@ -49,9 +49,10 @@ type Handler interface {
 }
 
 type Step struct {
-	Name       string `yaml:"name"`
-	Action     string `yaml:"action"`
-	Compensate string `yaml:"compensate"`
+	Name       string `yaml:"name" json:"Name"`
+	Action     string `yaml:"action" json:"Action"`
+	Compensate string `yaml:"compensate" json:"Compensate"`
+	Output     string `yaml:"output,omitempty" json:"Output,omitempty"`
 }
 
 type Runbook struct {
@@ -90,23 +91,30 @@ type Engine struct {
 type PendingRunbook struct {
 	ID           string    `json:"ID"`
 	Domain       string    `json:"Domain"`
+	ServiceName  string    `json:"ServiceName,omitempty"`
 	Action       string    `json:"Action"`
 	SourceCode   string    `json:"SourceCode,omitempty"`
 	AlertPayload string    `json:"AlertPayload,omitempty"`
+	RecentLogs   string    `json:"RecentLogs,omitempty"`
+	K8sEvents    []string  `json:"K8sEvents,omitempty"`
+	ProposedDiff string    `json:"ProposedDiff,omitempty"`
 	Chan         chan bool `json:"-"`
 	IsJit        bool      `json:"IsJit"`
 	Steps        []Step    `json:"Steps,omitempty"`
 }
 
 type HistoryRunbook struct {
-	ID             string `json:"ID"`
-	Domain         string `json:"Domain"`
-	Action         string `json:"Action"`
-	Status         string `json:"Status"` // "success", "failed", "rolled_back"
-	Timestamp      int64  `json:"Timestamp"`
-	AlertPayload   string `json:"AlertPayload,omitempty"`
-	CompletedSteps []Step `json:"CompletedSteps,omitempty"`
-	Output         string `json:"Output,omitempty"`
+	ID             string   `json:"ID"`
+	Domain         string   `json:"Domain"`
+	ServiceName    string   `json:"ServiceName,omitempty"`
+	Action         string   `json:"Action"`
+	Status         string   `json:"Status"` // "success", "failed", "rolled_back"
+	Timestamp      int64    `json:"Timestamp"`
+	AlertPayload   string   `json:"AlertPayload,omitempty"`
+	CompletedSteps []Step   `json:"CompletedSteps,omitempty"`
+	ExecutionLogs  []string `json:"ExecutionLogs,omitempty"`
+	AppliedDiff    string   `json:"AppliedDiff,omitempty"`
+	Output         string   `json:"Output,omitempty"`
 }
 
 // NewEngine builds a runbook engine. k8s may be nil, in which case DAG
@@ -395,7 +403,7 @@ func (e *Engine) scanAndAdoptOrphans() {
 	}
 }
 
-func (e *Engine) executeStep(script string, idempotencyKey string) error {
+func (e *Engine) executeStep(script string, idempotencyKey string) (string, error) {
 	var out []byte
 	var err error
 
@@ -409,11 +417,12 @@ func (e *Engine) executeStep(script string, idempotencyKey string) error {
 		out, err = cmd.CombinedOutput()
 	}
 
+	trimmedOut := strings.TrimSpace(string(out))
 	if err != nil {
-		return fmt.Errorf("%v (Output: %s)", err, strings.TrimSpace(string(out)))
+		return trimmedOut, fmt.Errorf("%v (Output: %s)", err, trimmedOut)
 	}
-	fmt.Printf("      %s✓ %s%s\n", ColorGreen, strings.TrimSpace(string(out)), ColorReset)
-	return nil
+	fmt.Printf("      %s✓ %s%s\n", ColorGreen, trimmedOut, ColorReset)
+	return trimmedOut, nil
 }
 
 func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResponse) {
@@ -474,6 +483,23 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 		}
 	}
 
+	var recentLogs string
+	var k8sEvents []string
+	var payloadMap map[string]interface{}
+	if err := json.Unmarshal(alert.Payload, &payloadMap); err == nil {
+		if logs, ok := payloadMap["recent_logs"].(string); ok {
+			recentLogs = logs
+		}
+		if events, ok := payloadMap["k8s_events"].([]interface{}); ok {
+			for _, ev := range events {
+				if evStr, ok := ev.(string); ok {
+					k8sEvents = append(k8sEvents, evStr)
+				}
+			}
+		}
+	}
+	proposedDiff := GenerateProposedDiff(domain, alert.ServiceName, runbook.Steps)
+
 	if requireApproval {
 		fmt.Printf("   %s⏸️  [HITL] Human approval required before executing runbook.%s\n", ColorYellow, ColorReset)
 		fmt.Printf("   %s         Approve via Web UI or run: 'reflex approve %s'%s\n", ColorYellow, alert.ID, ColorReset)
@@ -482,9 +508,13 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 		e.PendingApprovals.Store(alert.ID, &PendingRunbook{
 			ID:           alert.ID,
 			Domain:       domain,
+			ServiceName:  alert.ServiceName,
 			Action:       runbook.Steps[0].Action,
 			SourceCode:   rawGoCode,
 			AlertPayload: string(alert.Payload),
+			RecentLogs:   recentLogs,
+			K8sEvents:    k8sEvents,
+			ProposedDiff: proposedDiff,
 			Chan:         approvalChan,
 			IsJit:        isJit,
 			Steps:        runbook.Steps,
@@ -500,7 +530,7 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 		}
 		fmt.Printf("   %s✅ Runbook execution for %s was APPROVED by operator.%s\n", ColorGreen, alert.ID, ColorReset)
 	} else {
-		fmt.Printf("   %s⚡ [AUTO-EXEC] Static runbook in production. Bypassing human approval!%s\n", ColorGreen, ColorReset)
+		fmt.Printf("   %s⚡ [AUTO-EXEC] Autonomous execution enabled. Bypassing human approval!%s\n", ColorGreen, ColorReset)
 	}
 
 	state := RunbookState{
@@ -526,26 +556,38 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 		}()
 	}
 
+	var executionLogs []string
 	for i, step := range runbook.Steps {
 		fmt.Printf("   %s-> Step %d: %s%s (Action: %s)\n", ColorCyan, i+1, step.Name, ColorReset, step.Action)
 		
+		idempotencyKey := uuid.New().String()
+		out, err := e.executeStep(step.Action, idempotencyKey)
+		step.Output = out
+		if out != "" {
+			executionLogs = append(executionLogs, fmt.Sprintf("[Step %d: %s] %s", i+1, step.Name, out))
+		}
+
+		state.CompletedSteps = append(state.CompletedSteps, step)
+
 		hist := &HistoryRunbook{
 			ID:             alert.ID,
 			Domain:         domain,
+			ServiceName:    alert.ServiceName,
 			Action:         step.Action,
 			Status:         "success",
 			Timestamp:      time.Now().Unix(),
 			AlertPayload:   string(alert.Payload),
-			CompletedSteps: append(state.CompletedSteps, step),
+			CompletedSteps: state.CompletedSteps,
+			ExecutionLogs:  executionLogs,
+			AppliedDiff:    GenerateAppliedDiff(domain, alert.ServiceName, state.CompletedSteps, "success"),
 		}
 
-		idempotencyKey := uuid.New().String()
-		err := e.executeStep(step.Action, idempotencyKey)
 		if err != nil {
 			fmt.Printf("      %s❌ Execution failed: %v%s\n", ColorRed, err, ColorReset)
 			fmt.Printf("   %s⚠️ Initiating Compensating Transactions (Rollback)...%s\n", ColorYellow, ColorReset)
 			
 			hist.Status = "failed"
+			hist.AppliedDiff = GenerateAppliedDiff(domain, alert.ServiceName, state.CompletedSteps, "failed")
 			e.History.Store(alert.ID, hist)
 
 			if e.k8s != nil {
@@ -576,8 +618,6 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 			return
 		}
 		
-		state.CompletedSteps = append(state.CompletedSteps, step)
-		hist.CompletedSteps = state.CompletedSteps
 		e.History.Store(alert.ID, hist)
 		e.checkpoint(&state)
 	}
@@ -636,6 +676,8 @@ func (e *Engine) ManualRollback(id string) error {
 	e.rollback(stepsToRollback)
 
 	hist.Status = "rolled_back"
+	hist.AppliedDiff = GenerateAppliedDiff(hist.Domain, hist.ServiceName, stepsToRollback, "rolled_back")
+	hist.ExecutionLogs = append(hist.ExecutionLogs, fmt.Sprintf("[Manual Rollback] Successfully rolled back %d completed steps", len(stepsToRollback)))
 	e.History.Store(id, hist)
 	metrics.RemediationsTotal.WithLabelValues("manual_rollback").Inc()
 	return nil
@@ -649,9 +691,11 @@ func (e *Engine) rollback(completedSteps []Step) {
 		}
 		fmt.Printf("   %s<- Rollback Step: %s%s (Compensate: %s)\n", ColorYellow, step.Name, ColorReset, step.Compensate)
 		idempotencyKey := uuid.New().String()
-		err := e.executeStep(step.Compensate, idempotencyKey)
+		out, err := e.executeStep(step.Compensate, idempotencyKey)
 		if err != nil {
 			fmt.Printf("      %s❌ FATAL: Compensation failed! System in unknown state: %v%s\n", ColorRed, err, ColorReset)
+		} else if out != "" {
+			fmt.Printf("      %s✓ %s%s\n", ColorYellow, out, ColorReset)
 		}
 	}
 }
