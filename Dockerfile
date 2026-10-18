@@ -33,6 +33,7 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 # omitting policy.rego makes every kubectl_exec call fail closed.
 COPY runbooks.yaml policy.rego ./
 COPY scripts ./scripts
+COPY wasm-runbooks ./wasm-runbooks
 
 EXPOSE 8080 9090
 

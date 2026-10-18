@@ -14,7 +14,7 @@ Reflex is a high-throughput Go proxy that ingests infrastructure alerts via HTTP
 2. **MoA Evaluator**: Mixture-of-Agents consensus to prevent LLM hallucinations.
 3. **Storm-Breaker**: Sliding-window deduplicator squashing "Thundering Herd" alert storms using RAG embeddings.
 4. **JIT Coder Agent**: On-the-fly autonomous Go WebAssembly generation. When Reflex encounters a failing domain it doesn't have a static runbook for, it dynamically writes, compiles, and executes a Wasm runbook using local LLMs.
-5. **Environment-Aware HITL (Human-in-the-Loop)**: Production environments require explicit human approval (`reflex approve`) before execution. Staging environments auto-execute for rapid chaos testing.
+5. **Environment-Aware HITL (Human-in-the-Loop)**: Production environments require explicit human approval (via the embedded `/ui/` Web Dashboard) before execution. Staging environments auto-execute for rapid chaos testing.
 6. **Stateful DAGs**: Runbooks execute as LIFO state-machines with automatic compensation rollbacks.
 7. **Kubernetes Checkpointing**: Distributed checkpointing and Orphan Watcher for stateless crash-recovery via K8s ConfigMaps.
 
@@ -24,7 +24,7 @@ We use standard Go concurrency (goroutines and buffered channels) to keep things
 
 ```mermaid
 graph TD
-    A[External Prometheus/Datadog] -->|POST /webhook| B(HTTP Ingress Server)
+    A[External Prometheus/Alertmanager] -->|POST /webhook| B(HTTP Ingress Server)
     B -->|alertChan| S(Storm-Breaker Deduplicator)
     S -->|dedupeChan| C(MoA Evaluator Workers)
     C -->|Evaluate| Z[Local Ollama]
@@ -35,7 +35,8 @@ graph TD
     M -->|No| J[JIT Coder Agent]
     J -->|Generate Go & Compile to Wasm| W(Wasm-Shield Runtime)
     M -->|Yes| W
-    W -->|kubectl_exec via Host Function| K[K8s API]
+    W -->|Pending Approval Queue| U[HITL Web UI]
+    U -->|Approved| K[K8s API via Host Function]
     D -->|Low Confidence OR High Sev| G[Escalate to Slack/PagerDuty]
 ```
 
@@ -56,8 +57,12 @@ runbooks:
 If a domain (e.g., `network`) is NOT mapped, the **JIT Coder Agent** will generate one on the fly.
 
 **Environment variables (`reflex.yaml`) control HITL:**
-- `REFLEX_ENV=staging`: JIT runbooks auto-execute.
-- `REFLEX_ENV=production`: Runbooks pause for human approval.
+- `REFLEX_ENV=staging`: Auto-execute all runbooks instantly.
+- `REFLEX_ENV=production`: Runbooks pause in the pending queue for manual human approval via the Web UI (`http://localhost:8080/ui/`).
+
+## 📟 Integrations
+- **Alertmanager Ingestion:** The `/webhook` endpoint natively supports the Prometheus/Alertmanager array payload format, meaning no translation proxy is required between your Alertmanager receivers and Reflex.
+- **Slack/PagerDuty Escalations:** When the MoA Engine generates a low-confidence decision or evaluates a highly severe unrecoverable alert, it instantly fires a Slack-compatible JSON webhook payload alerting human operators for manual intervention.
 
 ## 🧪 End-to-End Local Testing
 Want to test the full auto-remediation pipeline with a real local Kubernetes cluster?

@@ -258,32 +258,45 @@ func main() {
 	uiFolder, _ := fs.Sub(uiFS, "ui")
 	mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(http.FS(uiFolder))))
 
-	// HITL endpoints
 	mux.HandleFunc("/pending", func(w http.ResponseWriter, r *http.Request) {
-		var pending []string
+		var pending []*runbooks.PendingRunbook
 		runbookEngine.PendingApprovals.Range(func(key, value interface{}) bool {
-			pending = append(pending, key.(string))
+			pending = append(pending, value.(*runbooks.PendingRunbook))
 			return true
 		})
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(pending)
 	})
 
-	// resolveApproval signals a waiting DAG and reports whether a consumer
-	// was still listening. The send used to be a bare blocking channel op,
-	// which would hang the HTTP handler forever if the DAG had already
-	// exited between the Load and the send.
+	mux.HandleFunc("/history", func(w http.ResponseWriter, r *http.Request) {
+		var history []*runbooks.HistoryRunbook
+		runbookEngine.History.Range(func(key, value interface{}) bool {
+			history = append(history, value.(*runbooks.HistoryRunbook))
+			return true
+		})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(history)
+	})
+
+	mux.HandleFunc("/rollback", func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("id")
+		if err := runbookEngine.ManualRollback(id); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "Runbook %s rolled back successfully", id)
+	})
+
 	resolveApproval := func(ctx context.Context, id string, approved bool) (bool, error) {
 		v, ok := runbookEngine.PendingApprovals.Load(id)
 		if !ok {
 			return false, nil
 		}
-		ch, ok := v.(chan bool)
-		if !ok {
-			return false, fmt.Errorf("unexpected approval channel type")
-		}
+		pendingRunbook := v.(*runbooks.PendingRunbook)
 		select {
-		case ch <- approved:
+		case pendingRunbook.Chan <- approved:
 			return true, nil
 		case <-time.After(5 * time.Second):
 			return false, fmt.Errorf("no DAG is waiting on approval for %s", id)

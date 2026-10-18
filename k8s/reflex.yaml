@@ -34,7 +34,7 @@ rules:
   resources: ["services"]
   verbs: ["get", "list"]
 - apiGroups: ["apps"]
-  resources: ["deployments", "deployments/scale"]
+  resources: ["deployments", "deployments/scale", "replicasets"]
   verbs: ["get", "list", "watch", "patch", "update"]
 - apiGroups: ["coordination.k8s.io"]
   resources: ["leases"]
@@ -84,13 +84,17 @@ spec:
         - name: ROUTING_MIN_CONFIDENCE
           value: "0.60"
         - name: ROUTING_MAX_SEVERITY
-          value: "8.0"
+          value: "9.0"
         - name: ROUTING_MIN_RECOVERABLE
           value: "0.60"
         - name: REFLEX_POLICY_PATH
           value: "/app/policy.rego"
         - name: REFLEX_ENV
           value: "production"
+        - name: OLLAMA_HOST
+          value: "http://172.25.80.1:11434"
+        - name: CODER_MODEL
+          value: "qwen2.5-coder:7b"
 ---
 apiVersion: v1
 kind: Service

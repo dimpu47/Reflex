@@ -3,339 +3,280 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Reflex HITL Dashboard</title>
+    <title>Reflex Remediations</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/atom-one-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/languages/go.min.js"></script>
     <style>
-        :root {
-            --bg-dark: #0f172a;
-            --panel-bg: rgba(30, 41, 59, 0.7);
-            --text-primary: #f8fafc;
-            --text-secondary: #94a3b8;
-            --accent-green: #10b981;
-            --accent-red: #ef4444;
-            --accent-blue: #3b82f6;
-            --glass-border: rgba(255, 255, 255, 0.1);
-        }
-
-        body {
-            font-family: 'Inter', -apple-system, sans-serif;
-            background: linear-gradient(135deg, #020617 0%, var(--bg-dark) 100%);
-            color: var(--text-primary);
-            margin: 0;
-            padding: 0;
-            min-height: 100vh;
-        }
-
-        header {
-            padding: 1.5rem 3rem;
-            border-bottom: 1px solid var(--glass-border);
-            backdrop-filter: blur(10px);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        h1 {
-            margin: 0;
-            font-size: 1.5rem;
-            background: linear-gradient(90deg, #818cf8, #c084fc);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        .container {
-            max-width: 1200px;
-            margin: 3rem auto;
-            padding: 0 2rem;
-        }
-
-        .dashboard-header {
-            margin-bottom: 2rem;
-        }
-
-        .card-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-            gap: 1.5rem;
-        }
-
-        .card {
-            background: var(--panel-bg);
-            border: 1px solid var(--glass-border);
-            border-radius: 12px;
-            padding: 1.5rem;
+        body { background-color: #0f172a; color: #f8fafc; font-family: 'Inter', sans-serif; }
+        .glass-panel {
+            background: rgba(30, 41, 59, 0.7);
             backdrop-filter: blur(12px);
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
-            animation: fadeIn 0.4s ease-out;
+            border: 1px solid rgba(255, 255, 255, 0.1);
         }
-
-        .card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
-        }
-
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 1rem;
-        }
-
-        .alert-id {
-            font-family: monospace;
-            color: var(--accent-blue);
-            background: rgba(59, 130, 246, 0.1);
-            padding: 0.25rem 0.5rem;
-            border-radius: 6px;
-            font-size: 0.85rem;
-        }
-
-        .card-title {
-            margin: 0;
-            font-size: 1.1rem;
-            font-weight: 600;
-        }
-
-        .card-body {
-            color: var(--text-secondary);
-            font-size: 0.95rem;
-            margin-bottom: 1.5rem;
-            line-height: 1.5;
-        }
-
-        .actions {
-            display: flex;
-            gap: 1rem;
-        }
-
-        button {
-            flex: 1;
-            padding: 0.75rem;
-            border: none;
-            border-radius: 8px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            font-family: inherit;
-        }
-
-        .btn-approve {
-            background: rgba(16, 185, 129, 0.1);
-            color: var(--accent-green);
-            border: 1px solid rgba(16, 185, 129, 0.2);
-        }
-
-        .btn-approve:hover {
-            background: var(--accent-green);
-            color: white;
-            box-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
-        }
-
-        .btn-deny {
-            background: rgba(239, 68, 68, 0.1);
-            color: var(--accent-red);
-            border: 1px solid rgba(239, 68, 68, 0.2);
-        }
-
-        .btn-deny:hover {
-            background: var(--accent-red);
-            color: white;
-            box-shadow: 0 0 15px rgba(239, 68, 68, 0.4);
-        }
-
-        .empty-state {
-            text-align: center;
-            padding: 4rem;
-            color: var(--text-secondary);
-        }
-
-        .loader {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 3px solid rgba(255,255,255,0.1);
-            border-radius: 50%;
-            border-top-color: var(--accent-blue);
-            animation: spin 1s ease-in-out infinite;
-        }
-
-        .status-badge {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            font-size: 0.9rem;
-            color: var(--text-secondary);
-        }
-        
-        .pulse {
-            width: 8px;
-            height: 8px;
-            background: var(--accent-green);
-            border-radius: 50%;
-            box-shadow: 0 0 10px var(--accent-green);
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        @keyframes pulse {
-            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
-            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-        }
-
-        /* Toast notifications */
-        #toast-container {
-            position: fixed;
-            bottom: 2rem;
-            right: 2rem;
-            display: flex;
-            flex-direction: column;
-            gap: 1rem;
-            z-index: 50;
-        }
-        .toast {
-            background: var(--panel-bg);
-            border: 1px solid var(--glass-border);
-            padding: 1rem 1.5rem;
-            border-radius: 8px;
-            backdrop-filter: blur(10px);
-            animation: slideIn 0.3s ease-out forwards, fadeOut 0.5s ease-in forwards 3s;
-        }
-        @keyframes slideIn {
-            from { transform: translateX(100%); opacity: 0; }
-            to { transform: translateX(0); opacity: 1; }
-        }
-        @keyframes fadeOut {
-            from { opacity: 1; }
-            to { opacity: 0; }
-        }
+        .code-container pre { margin: 0; }
+        .tab-active { border-bottom: 2px solid #6366f1; color: #818cf8; }
     </style>
 </head>
-<body>
-    <header>
-        <h1>Reflex Ops Center</h1>
-        <div class="status-badge">
-            <div class="pulse"></div>
-            Live Polling
+<body class="min-h-screen pb-12">
+    <header class="border-b border-slate-800 glass-panel sticky top-0 z-50">
+        <div class="max-w-6xl mx-auto px-6 py-4 flex justify-between items-center">
+            <h1 class="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400 flex items-center gap-2">
+                <svg class="w-6 h-6 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                Reflex Enterprise
+            </h1>
+            <div class="flex gap-4">
+                <button onclick="switchTab('pending')" id="tab-pending" class="px-4 py-2 font-medium tab-active transition-colors">Pending Approvals</button>
+                <button onclick="switchTab('history')" id="tab-history" class="px-4 py-2 font-medium text-slate-400 hover:text-slate-200 transition-colors">Runbook History</button>
+            </div>
         </div>
     </header>
 
-    <div class="container">
-        <div class="dashboard-header">
-            <h2 style="margin:0;">Pending Approvals</h2>
-            <p style="color: var(--text-secondary); margin-top: 0.5rem;">Runbooks waiting for Human-in-the-Loop authorization.</p>
+    <main class="max-w-6xl mx-auto px-6 mt-8">
+        <div id="view-pending">
+            <div class="flex items-center justify-between mb-6">
+                <h2 class="text-xl font-semibold text-slate-200 flex items-center gap-2">
+                    <span class="w-3 h-3 rounded-full bg-amber-500 animate-pulse"></span>
+                    Awaiting Approval
+                </h2>
+                <div class="text-sm text-slate-400">Auto-refreshing live</div>
+            </div>
+            <div id="pending-grid" class="grid grid-cols-1 gap-6"></div>
         </div>
 
-        <div id="grid" class="card-grid">
-            <div class="empty-state" style="grid-column: 1 / -1;">
-                <div class="loader" style="margin-bottom: 1rem;"></div>
-                <div>Fetching pending DAGs...</div>
+        <div id="view-history" class="hidden">
+            <div class="flex items-center justify-between mb-6">
+                <h2 class="text-xl font-semibold text-slate-200 flex items-center gap-2">
+                    <svg class="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    Execution History
+                </h2>
+                <button onclick="fetchHistory()" class="text-sm px-3 py-1 bg-slate-800 rounded hover:bg-slate-700">Refresh</button>
+            </div>
+            <div class="glass-panel rounded-xl overflow-hidden shadow-2xl">
+                <table class="w-full text-left border-collapse">
+                    <thead>
+                        <tr class="bg-slate-800/50 text-slate-300 text-sm border-b border-slate-700">
+                            <th class="py-3 px-4 font-semibold">Timestamp</th>
+                            <th class="py-3 px-4 font-semibold">Alert ID</th>
+                            <th class="py-3 px-4 font-semibold">Domain</th>
+                            <th class="py-3 px-4 font-semibold">Status</th>
+                            <th class="py-3 px-4 font-semibold text-right">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-tbody" class="text-sm"></tbody>
+                </table>
             </div>
         </div>
-    </div>
-
-    <div id="toast-container"></div>
+    </main>
 
     <script>
-        const grid = document.getElementById('grid');
-        let knownIds = new Set();
-
-        function showToast(message) {
-            const container = document.getElementById('toast-container');
-            const toast = document.createElement('div');
-            toast.className = 'toast';
-            toast.textContent = message;
-            container.appendChild(toast);
-            setTimeout(() => {
-                if (toast.parentNode) toast.parentNode.removeChild(toast);
-            }, 3500);
+        let currentTab = 'pending';
+        function switchTab(tab) {
+            currentTab = tab;
+            document.getElementById('tab-pending').classList.toggle('tab-active', tab === 'pending');
+            document.getElementById('tab-pending').classList.toggle('text-slate-400', tab !== 'pending');
+            document.getElementById('tab-history').classList.toggle('tab-active', tab === 'history');
+            document.getElementById('tab-history').classList.toggle('text-slate-400', tab !== 'history');
+            
+            document.getElementById('view-pending').classList.toggle('hidden', tab !== 'pending');
+            document.getElementById('view-history').classList.toggle('hidden', tab !== 'history');
+            
+            if (tab === 'history') fetchHistory();
         }
 
-        async function handleAction(id, action) {
-            try {
-                const res = await fetch(`/${action}?id=${encodeURIComponent(id)}`, { method: 'POST' });
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                showToast(`Successfully ${action}d alert ${id}`);
-                poll(); // instant refresh
-            } catch (err) {
-                showToast(`Error: ${err.message}`);
-            }
+        function escapeHtml(unsafe) {
+            return unsafe
+                 .replace(/&/g, "&amp;")
+                 .replace(/</g, "&lt;")
+                 .replace(/>/g, "&gt;")
+                 .replace(/"/g, "&quot;")
+                 .replace(/'/g, "&#039;");
         }
 
-        async function poll() {
+        async function fetchPending() {
+            if (currentTab !== 'pending') return;
             try {
                 const res = await fetch('/pending');
                 const alerts = await res.json();
+                const grid = document.getElementById('pending-grid');
                 
                 if (!alerts || alerts.length === 0) {
                     grid.innerHTML = `
-                        <div class="empty-state" style="grid-column: 1 / -1;">
-                            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.3; margin-bottom:1rem;">
-                                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                                <polyline points="22 4 12 14.01 9 11.01"></polyline>
-                            </svg>
-                            <div>All systems normal. No pending approvals.</div>
-                        </div>
-                    `;
-                    knownIds.clear();
+                        <div class="glass-panel rounded-xl p-12 text-center border-dashed">
+                            <svg class="w-12 h-12 text-slate-600 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            <h3 class="text-lg font-medium text-slate-300">All Clear</h3>
+                            <p class="text-slate-500 mt-1">No pending auto-remediations require approval.</p>
+                        </div>`;
                     return;
                 }
 
-                const currentIds = new Set(alerts);
+                grid.innerHTML = alerts.map(alert => `
+                    <div class="glass-panel rounded-xl p-6 shadow-xl transition-all duration-300 hover:shadow-indigo-500/10">
+                        <div class="flex justify-between items-start mb-4">
+                            <div>
+                                <div class="flex items-center gap-3 mb-1">
+                                    <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ${alert.IsJit ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'bg-blue-500/20 text-blue-300 border border-blue-500/30'}">
+                                        ${alert.IsJit ? 'JIT GENERATED' : 'STATIC RUNBOOK'}
+                                    </span>
+                                    <span class="text-sm text-slate-400">Domain: <span class="text-slate-200 font-mono">${alert.Domain}</span></span>
+                                </div>
+                                <h3 class="text-lg font-medium text-slate-100 font-mono mt-2">${alert.ID}</h3>
+                            </div>
+                            <div class="flex gap-2">
+                                <button onclick="action('${alert.ID}', 'approve')" class="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg transition-colors shadow-lg shadow-indigo-600/30 flex items-center gap-2">
+                                    Approve & Execute
+                                </button>
+                                <button onclick="action('${alert.ID}', 'deny')" class="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-red-400 text-sm font-medium rounded-lg transition-colors border border-slate-700">
+                                    Reject
+                                </button>
+                            </div>
+                        </div>
+
+                        ${alert.Steps && alert.Steps.length > 0 ? `
+                        <div class="mt-4 mb-4">
+                            <h4 class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">DAG Execution Steps</h4>
+                            <div class="flex flex-wrap gap-2 items-center">
+                                ${alert.Steps.map((s, idx) => `
+                                    <div class="flex items-center gap-2 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700 text-xs">
+                                        <span class="w-5 h-5 rounded-full bg-indigo-500/20 text-indigo-300 font-bold flex items-center justify-center">${idx+1}</span>
+                                        <span class="font-medium text-slate-200">${escapeHtml(s.Name)}</span>
+                                        <span class="text-slate-400 font-mono text-[10px] truncate max-w-[150px]">${escapeHtml(s.Action)}</span>
+                                    </div>
+                                    ${idx < alert.Steps.length - 1 ? `<span class="text-slate-500">→</span>` : ''}
+                                `).join('')}
+                            </div>
+                        </div>
+                        ` : ''}
+                        
+                        <div class="mt-5 mb-4">
+                            <h4 class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-2">
+                                Alert Context
+                            </h4>
+                            <div class="bg-slate-900/50 p-4 rounded-lg border border-slate-700/50">
+                                <pre class="text-xs text-slate-300 font-mono whitespace-pre-wrap break-words">${alert.AlertPayload ? escapeHtml(alert.AlertPayload) : 'No payload context'}</pre>
+                            </div>
+                        </div>
+
+                        <div class="mt-5">
+                            <h4 class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+                                Execution Plan / Source Code
+                            </h4>
+                            ${alert.SourceCode ? `
+                                <div class="rounded-lg overflow-hidden border border-slate-800 code-container shadow-inner bg-[#282c34]">
+                                    <pre><code class="language-go text-sm">${escapeHtml(alert.SourceCode)}</code></pre>
+                                </div>
+                            ` : `
+                                <div class="bg-slate-800/50 p-4 rounded-lg border border-slate-700/50">
+                                    <p class="text-sm text-slate-300 font-mono">Target Wasm Binary: <span class="text-blue-400">${alert.Action}</span></p>
+                                </div>
+                            `}
+                        </div>
+                    </div>
+                `).join('');
                 
-                // Clear grid if we went from empty to having items
-                if (grid.querySelector('.empty-state')) {
-                    grid.innerHTML = '';
-                }
-
-                // Add new cards
-                alerts.forEach(id => {
-                    if (!document.getElementById(`card-${id}`)) {
-                        const card = document.createElement('div');
-                        card.id = `card-${id}`;
-                        card.className = 'card';
-                        card.innerHTML = `
-                            <div class="card-header">
-                                <h3 class="card-title">Runbook Pending</h3>
-                                <span class="alert-id">${id}</span>
-                            </div>
-                            <div class="card-body">
-                                This automated runbook execution requires human authorization to proceed in the production environment.
-                            </div>
-                            <div class="actions">
-                                <button class="btn-approve" onclick="handleAction('${id}', 'approve')">✓ Approve</button>
-                                <button class="btn-deny" onclick="handleAction('${id}', 'deny')">✕ Reject</button>
-                            </div>
-                        `;
-                        grid.appendChild(card);
-                    }
-                });
-
-                // Remove old cards
-                knownIds.forEach(id => {
-                    if (!currentIds.has(id)) {
-                        const el = document.getElementById(`card-${id}`);
-                        if (el) el.remove();
-                    }
-                });
-
-                knownIds = currentIds;
-
-            } catch (err) {
-                console.error("Polling failed:", err);
-            }
+                document.querySelectorAll('pre code').forEach((block) => hljs.highlightElement(block));
+            } catch (err) {}
         }
 
-        // Start polling every 2 seconds
-        poll();
-        setInterval(poll, 2000);
+        async function fetchHistory() {
+            try {
+                const res = await fetch('/history');
+                const history = await res.json();
+                const tbody = document.getElementById('history-tbody');
+                
+                if (!history || history.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="5" class="py-8 text-center text-slate-500">No remediation history found.</td></tr>`;
+                    return;
+                }
+                
+                history.sort((a, b) => b.Timestamp - a.Timestamp);
+                
+                tbody.innerHTML = history.map((h, i) => {
+                    const date = new Date(h.Timestamp * 1000).toLocaleString();
+                    const statusColors = {
+                        'success': 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20',
+                        'failed': 'text-red-400 bg-red-400/10 border-red-400/20',
+                        'rolled_back': 'text-amber-400 bg-amber-400/10 border-amber-400/20'
+                    };
+                    const colorClass = statusColors[h.Status] || 'text-slate-400 bg-slate-400/10';
+                    const hasSteps = h.CompletedSteps && h.CompletedSteps.length > 0;
+                    
+                    return `
+                    <tr class="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors cursor-pointer" onclick="toggleDetails(${i})">
+                        <td class="py-4 px-4 text-slate-400 whitespace-nowrap">${date}</td>
+                        <td class="py-4 px-4 font-mono text-slate-300">${h.ID}</td>
+                        <td class="py-4 px-4 text-blue-300 font-mono">${h.Domain}</td>
+                        <td class="py-4 px-4">
+                            <span class="px-2.5 py-1 rounded-full text-xs font-semibold border ${colorClass}">
+                                ${h.Status.toUpperCase()}
+                            </span>
+                        </td>
+                        <td class="py-4 px-4 text-right" onclick="event.stopPropagation()">
+                            ${h.Status === 'success' ? `
+                            <button onclick="rollback('${h.ID}')" class="px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 text-xs font-medium rounded border border-amber-500/30 transition-colors">
+                                Rollback
+                            </button>
+                            ` : ''}
+                        </td>
+                    </tr>
+                    ${hasSteps ? `
+                    <tr id="details-${i}" class="hidden bg-slate-900/60 border-b border-slate-800/50">
+                        <td colspan="5" class="p-4">
+                            <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Executed DAG Steps</div>
+                            <div class="flex flex-wrap gap-2">
+                                ${h.CompletedSteps.map(cs => `
+                                    <div class="bg-slate-800 px-3 py-1.5 rounded border border-slate-700 text-xs">
+                                        <div class="font-medium text-slate-200">${escapeHtml(cs.Name)}</div>
+                                        <div class="text-[10px] font-mono text-blue-400 mt-0.5">Action: ${escapeHtml(cs.Action)}</div>
+                                        ${cs.Compensate ? `<div class="text-[10px] font-mono text-amber-400">Compensate: ${escapeHtml(cs.Compensate)}</div>` : ''}
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </td>
+                    </tr>
+                    ` : ''}
+                    `;
+                }).join('');
+            } catch (err) {}
+        }
+
+        function toggleDetails(idx) {
+            const el = document.getElementById(`details-${idx}`);
+            if (el) el.classList.toggle('hidden');
+        }
+
+        async function action(id, type) {
+            const res = await fetch(`/${type}?id=${id}`, { method: 'POST' });
+            if (res.ok) {
+                showToast(`Runbook ${id} ${type === 'approve' ? 'approved & executing' : 'denied'}`, 'success');
+            } else {
+                showToast(`Failed to ${type} runbook ${id}`, 'error');
+            }
+            fetchPending();
+        }
+        
+        async function rollback(id) {
+            if(!confirm(`Are you sure you want to rollback remediation for ${id}?`)) return;
+            const res = await fetch(`/rollback?id=${id}`, { method: 'POST' });
+            if (res.ok) {
+                showToast(`Runbook ${id} successfully rolled back!`, 'success');
+            } else {
+                showToast(`Rollback failed for ${id}`, 'error');
+            }
+            fetchHistory();
+        }
+
+        function showToast(msg, type) {
+            const toast = document.createElement('div');
+            toast.className = `fixed bottom-6 right-6 px-5 py-3 rounded-xl shadow-2xl text-sm font-medium z-50 transition-all transform duration-300 ${type === 'success' ? 'bg-indigo-600 text-white shadow-indigo-600/30' : 'bg-red-600 text-white shadow-red-600/30'}`;
+            toast.innerText = msg;
+            document.body.appendChild(toast);
+            setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 3000);
+        }
+
+        setInterval(fetchPending, 2000);
+        fetchPending();
     </script>
 </body>
 </html>

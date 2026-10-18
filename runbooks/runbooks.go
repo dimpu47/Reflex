@@ -83,7 +83,30 @@ type Engine struct {
 	regoQuery rego.PreparedEvalQuery
 	regoErr   error
 
-	PendingApprovals sync.Map // map[string]chan bool
+	PendingApprovals sync.Map // map[string]*PendingRunbook
+	History          sync.Map // map[string]*HistoryRunbook
+}
+
+type PendingRunbook struct {
+	ID           string    `json:"ID"`
+	Domain       string    `json:"Domain"`
+	Action       string    `json:"Action"`
+	SourceCode   string    `json:"SourceCode,omitempty"`
+	AlertPayload string    `json:"AlertPayload,omitempty"`
+	Chan         chan bool `json:"-"`
+	IsJit        bool      `json:"IsJit"`
+	Steps        []Step    `json:"Steps,omitempty"`
+}
+
+type HistoryRunbook struct {
+	ID             string `json:"ID"`
+	Domain         string `json:"Domain"`
+	Action         string `json:"Action"`
+	Status         string `json:"Status"` // "success", "failed", "rolled_back"
+	Timestamp      int64  `json:"Timestamp"`
+	AlertPayload   string `json:"AlertPayload,omitempty"`
+	CompletedSteps []Step `json:"CompletedSteps,omitempty"`
+	Output         string `json:"Output,omitempty"`
 }
 
 // NewEngine builds a runbook engine. k8s may be nil, in which case DAG
@@ -399,11 +422,16 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 	fmt.Printf("%s[✅ AUTO-REMEDIATE DAG]%s Triggered for alert %s%s%s (Domain: %s)\n",
 		ColorGreen, ColorReset, ColorCyan, alert.ID, ColorReset, domain)
 
+	var rawGoCode string
+	isJit := false
 	runbook, ok := e.config.Runbooks[domain]
 	if !ok || len(runbook.Steps) == 0 {
+		isJit = true
 		fmt.Printf("   %s(No static runbook DAG mapped for domain: %s. Initiating Autonomous Coder Agent...)%s\n", ColorYellow, domain, ColorReset)
 		
-		wasmPath, err := coder.GenerateAndCompile(context.Background(), domain, string(alert.Payload))
+		var err error
+		var wasmPath string
+		wasmPath, rawGoCode, err = coder.GenerateAndCompile(context.Background(), domain, string(alert.Payload))
 		if err != nil {
 			fmt.Printf("   %s❌ Failed to autonomously generate runbook: %v%s\n", ColorRed, err, ColorReset)
 			e.Escalate(alert, eval)
@@ -420,7 +448,16 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 				},
 			},
 		}
-
+	} else {
+		// Static Runbook: attempt to load source code for UI if possible
+		action := runbook.Steps[0].Action
+		if strings.HasPrefix(action, "scripts/") && strings.HasSuffix(action, ".wasm") {
+			folder := strings.TrimSuffix(strings.TrimPrefix(action, "scripts/"), ".wasm")
+			srcPath := fmt.Sprintf("wasm-runbooks/%s/main.go", folder)
+			if srcBytes, err := os.ReadFile(srcPath); err == nil {
+				rawGoCode = string(srcBytes)
+			}
+		}
 	}
 
 	env := os.Getenv("REFLEX_ENV")
@@ -428,23 +465,38 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 		env = "production" // default to safest mode
 	}
 
-	if env == "production" {
-		// ─── PRODUCTION: ALWAYS require human approval before executing runbooks ───
-		fmt.Printf("   %s⏸️  [PROD-HITL] Production environment detected. Human approval required before executing runbook.%s\n", ColorYellow, ColorReset)
+	requireApproval := true
+	if env == "production" && !isJit {
+		requireApproval = false
+	}
+
+	if requireApproval {
+		fmt.Printf("   %s⏸️  [HITL] Human approval required before executing runbook.%s\n", ColorYellow, ColorReset)
 		fmt.Printf("   %s         Approve via Web UI or run: 'reflex approve %s'%s\n", ColorYellow, alert.ID, ColorReset)
+		
 		approvalChan := make(chan bool)
-		e.PendingApprovals.Store(alert.ID, approvalChan)
+		e.PendingApprovals.Store(alert.ID, &PendingRunbook{
+			ID:           alert.ID,
+			Domain:       domain,
+			Action:       runbook.Steps[0].Action,
+			SourceCode:   rawGoCode,
+			AlertPayload: string(alert.Payload),
+			Chan:         approvalChan,
+			IsJit:        isJit,
+			Steps:        runbook.Steps,
+		})
+
 		approved := <-approvalChan
 		e.PendingApprovals.Delete(alert.ID)
+
 		if !approved {
-			fmt.Printf("   %s🛑 Human denied execution. Escalating.%s\n", ColorRed, ColorReset)
+			fmt.Printf("   %s🚫 Runbook execution for %s was DENIED by operator. Escalating.%s\n", ColorRed, alert.ID, ColorReset)
 			e.Escalate(alert, eval)
 			return
 		}
-		fmt.Printf("   %s▶️  Human approved! Executing in production.%s\n", ColorGreen, ColorReset)
+		fmt.Printf("   %s✅ Runbook execution for %s was APPROVED by operator.%s\n", ColorGreen, alert.ID, ColorReset)
 	} else {
-		// ─── NON-PROD (staging/test/dev): auto-execute, no approval needed ───
-		fmt.Printf("   %s🧪 [%s] Non-production environment. Auto-executing runbook (no approval needed).%s\n", ColorCyan, strings.ToUpper(env), ColorReset)
+		fmt.Printf("   %s⚡ [AUTO-EXEC] Static runbook in production. Bypassing human approval!%s\n", ColorGreen, ColorReset)
 	}
 
 	state := RunbookState{
@@ -473,12 +525,25 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 	for i, step := range runbook.Steps {
 		fmt.Printf("   %s-> Step %d: %s%s (Action: %s)\n", ColorCyan, i+1, step.Name, ColorReset, step.Action)
 		
+		hist := &HistoryRunbook{
+			ID:             alert.ID,
+			Domain:         domain,
+			Action:         step.Action,
+			Status:         "success",
+			Timestamp:      time.Now().Unix(),
+			AlertPayload:   string(alert.Payload),
+			CompletedSteps: append(state.CompletedSteps, step),
+		}
+
 		idempotencyKey := uuid.New().String()
 		err := e.executeStep(step.Action, idempotencyKey)
 		if err != nil {
 			fmt.Printf("      %s❌ Execution failed: %v%s\n", ColorRed, err, ColorReset)
 			fmt.Printf("   %s⚠️ Initiating Compensating Transactions (Rollback)...%s\n", ColorYellow, ColorReset)
 			
+			hist.Status = "failed"
+			e.History.Store(alert.ID, hist)
+
 			if e.k8s != nil {
 				close(doneChan)
 			}
@@ -492,10 +557,10 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 			if e.MemoryStore != nil {
 				go func(alertState []byte) {
 					emb, _ := memory.GetEmbedding(context.Background(), string(alertState))
-				e.MemoryStore.SaveOutcome(memory.Incident{
-					ID:         alert.ID,
-					Domain:     domain,
-					AlertState: string(alertState),
+					e.MemoryStore.SaveOutcome(memory.Incident{
+						ID:         alert.ID,
+						Domain:     domain,
+						AlertState: string(alertState),
 						Resolution: fmt.Sprintf("Failed at step: %s", step.Name),
 						Outcome:    "failure",
 						Embedding:  emb,
@@ -508,6 +573,8 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 		}
 		
 		state.CompletedSteps = append(state.CompletedSteps, step)
+		hist.CompletedSteps = state.CompletedSteps
+		e.History.Store(alert.ID, hist)
 		e.checkpoint(&state)
 	}
 	
@@ -534,6 +601,40 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 			})
 		}(alert.Payload)
 	}
+}
+
+// ManualRollback executes the compensation steps for an alert's completed remediation DAG.
+func (e *Engine) ManualRollback(id string) error {
+	v, ok := e.History.Load(id)
+	if !ok {
+		return fmt.Errorf("runbook history not found for %s", id)
+	}
+	hist := v.(*HistoryRunbook)
+	if hist.Status == "rolled_back" {
+		return fmt.Errorf("runbook %s is already rolled back", id)
+	}
+
+	fmt.Printf("%s🔄 [MANUAL ROLLBACK]%s Initiating compensation rollback for alert %s%s%s (Domain: %s)\n",
+		ColorYellow, ColorReset, ColorCyan, id, ColorReset, hist.Domain)
+
+	stepsToRollback := hist.CompletedSteps
+	// If completed steps wasn't stored or empty, check static runbook definition
+	if len(stepsToRollback) == 0 {
+		if rb, exists := e.config.Runbooks[hist.Domain]; exists {
+			stepsToRollback = rb.Steps
+		}
+	}
+
+	if len(stepsToRollback) == 0 {
+		return fmt.Errorf("no compensation steps found to roll back %s", id)
+	}
+
+	e.rollback(stepsToRollback)
+
+	hist.Status = "rolled_back"
+	e.History.Store(id, hist)
+	metrics.RemediationsTotal.WithLabelValues("manual_rollback").Inc()
+	return nil
 }
 
 func (e *Engine) rollback(completedSteps []Step) {

@@ -7,6 +7,9 @@ runbooks:
       - name: "Restart Redis"
         action: "./scripts/restart-redis.wasm"
         compensate: "./scripts/rollback-redis.wasm"
+      - name: "Restore Connections"
+        action: "http://localhost:9090/restore-connections.wasm"
+        compensate: ""
   application:
     steps:
       - name: "Restart Deployment"

@@ -3,6 +3,7 @@ package evaluator
 import (
 	"context"
 	"math/rand"
+	"strings"
 	"time"
 )
 
@@ -34,15 +35,26 @@ func (m *MockClient) Evaluate(ctx context.Context, req EvaluationRequest) (*Eval
 		recoverable = 0.85 // Falls through Condition A, triggers default Escalation
 	}
 
+	// Extract domain from request state if possible
+	domain := "database"
+	if len(req.State) > 0 {
+		stateStr := string(req.State)
+		if strings.Contains(stateStr, `"service": "network"`) || strings.Contains(stateStr, `"service":"network"`) {
+			domain = "network"
+		} else if strings.Contains(stateStr, `"service": "application"`) || strings.Contains(stateStr, `"service":"application"`) {
+			domain = "application"
+		}
+	}
+
 	return &EvaluationResponse{
 		Answers: Answers{
 			Domain: Choice{
-				Choice:     "database",
+				Choice:     domain,
 				Confidence: confidence,
 				Probabilities: map[string]float64{
-					"database":    0.96,
-					"application": 0.03,
-					"network":     0.01,
+					"database":    0.50,
+					"application": 0.25,
+					"network":     0.25,
 					"cluster_ops": 0.00,
 				},
 			},
