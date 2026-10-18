@@ -15,12 +15,57 @@ Reflex pairs autonomous AI reasoning with an enterprise **Human-in-the-Loop (HIT
 ### 1. Web UI Operator Flow (Diffs, Pod Logs, & 1-Click Rollback)
 Review proposed cluster mutations before execution. Inspect unified Git-style diffs (`+`/`-`), stream live failing pod stdout/stderr, verify K8s events, and execute 1-click compensation rollbacks.
 
-![Reflex Web UI Demo](assets/reflex_ui_demo.gif)
+[![Reflex Web UI Demo](assets/reflex_ui_demo.gif)](assets/reflex_ui_demo.mp4)
+> 💡 *Click image to open the [pausable MP4 video](assets/reflex_ui_demo.mp4).*
+
+<details>
+<summary>📸 <b>Click to expand step-by-step UI breakdown (Pause & Inspect)</b></summary>
+
+#### Tab 1: Cluster State Diff (Proposed Mutation)
+Unified git-style diff displaying current failing state in red (`-`) and proposed corrective actions in green (`+`).
+![Cluster State Diff](assets/ui/diff_tab.png)
+
+#### Tab 2: Live Pod Terminal Logs
+Dark terminal streaming the last 50 lines of logs directly from the failing container with line numbers.
+![Pod Recent Logs](assets/ui/logs_tab.png)
+
+#### Tab 3: Execution History & Applied Cluster State Diff
+Audit log of completed DAGs showing per-step execution stdout, applied diffs, and the 1-click compensation rollback button.
+![Runbook Execution History](assets/ui/history_tab.png)
+
+</details>
+
+---
 
 ### 2. Kubernetes Cluster Remediation Pipeline
 From Prometheus Alertmanager webhook ingress to Wazero WebAssembly sandbox execution and distributed ConfigMap checkpointing.
 
-![Reflex Cluster Lifecycle Pipeline](assets/reflex_cluster_flow.gif)
+[![Reflex Cluster Lifecycle Pipeline](assets/reflex_cluster_flow.gif)](assets/reflex_cluster_flow.mp4)
+> 💡 *Click image to open the [pausable MP4 video](assets/reflex_cluster_flow.mp4).*
+
+<details>
+<summary>🔍 <b>Click to expand individual pipeline stages (Pause & Read each step)</b></summary>
+
+| Stage | Pipeline Milestone | Description |
+| :--- | :--- | :--- |
+| **Stage 1** | **Alert Ingress & K8s Enrichment** | HTTP POST `/webhook` ingests alert; in-cluster K8s API client queries last 50 pod logs + 5 recent namespace events. |
+| **Stage 2** | **Storm-Breaker Dedupe & RAG** | 5-second sliding window squashes thundering herd alert storms; queries vector store for historical reliability. |
+| **Stage 3** | **MoA Consensus & OPA Gate** | Mixture-of-Agents classifies failure domain and auto-recoverability; OPA verifies `policy.rego` host permissions. |
+| **Stage 4** | **Human-in-the-Loop Review** | Production gate pauses execution; operator reviews unified diff and pod logs in Web UI before approving. |
+| **Stage 5** | **Wasm Sandbox Execution** | `wazero` executes isolated WebAssembly module; host functions dispatch authorized `kubectl` commands to K8s API. |
+| **Stage 6** | **ConfigMap Checkpointing & Rollback** | Completed steps are checkpointed in K8s ConfigMaps with leader leases; inverse compensation actions cached for 1-click rollback. |
+
+#### Stage Slides:
+1. **Ingress & Enrichment:** ![Stage 1](assets/stages/stage1_ingress.png)
+2. **Storm-Breaker & RAG:** ![Stage 2](assets/stages/stage2_dedupe_rag.png)
+3. **MoA & OPA Policy:** ![Stage 3](assets/stages/stage3_moa_opa.png)
+4. **HITL Review:** ![Stage 4](assets/stages/stage4_hitl.png)
+5. **Wasm Execution:** ![Stage 5](assets/stages/stage5_wasm_exec.png)
+6. **State Persistence & Rollback:** ![Stage 6](assets/stages/stage6_checkpoint_rollback.png)
+
+</details>
+
+---
 
 ## 🌟 Core Features
 
