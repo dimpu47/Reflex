@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"os"
@@ -13,6 +15,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 // Incident represents a past remediation outcome
@@ -25,9 +33,16 @@ type Incident struct {
 	Embedding   []float64 `json:"embedding"`
 }
 
+// S3API abstracts S3 operations for testability and runtime flexibility
+type S3API interface {
+	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+}
+
 type Store struct {
 	mu        sync.RWMutex
 	incidents []Incident
+	s3Client  S3API
 	s3Bucket  string
 	s3Key     string
 	localFile string
@@ -41,20 +56,86 @@ func NewStore(bucket, key, localFile string) (*Store, error) {
 		localFile: localFile,
 		incidents: make([]Incident, 0),
 	}
-	
+
+	if bucket != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var optFns []func(*awsconfig.LoadOptions) error
+		if region := os.Getenv("AWS_REGION"); region != "" {
+			optFns = append(optFns, awsconfig.WithRegion(region))
+		}
+
+		cfg, err := awsconfig.LoadDefaultConfig(ctx, optFns...)
+		if err == nil {
+			var s3Opts []func(*s3.Options)
+			if endpoint := os.Getenv("S3_ENDPOINT"); endpoint != "" {
+				s3Opts = append(s3Opts, func(o *s3.Options) {
+					o.BaseEndpoint = aws.String(endpoint)
+					o.UsePathStyle = true
+				})
+			}
+			s.s3Client = s3.NewFromConfig(cfg, s3Opts...)
+		} else {
+			fmt.Printf("⚠️  Failed to load AWS configuration: %v (falling back to local cache)\n", err)
+		}
+	}
+
 	if err := s.load(); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("failed to load memory: %v", err)
 	}
 	return s, nil
 }
 
-// load reads the JSONL from S3 (mocked locally for now) and populates the store
+// SetS3Client injects a custom or mock S3 client
+func (s *Store) SetS3Client(client S3API) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.s3Client = client
+}
+
+// load reads the JSONL from S3 (if configured) or local file and populates the store
 func (s *Store) load() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// In a real S3 scenario, we'd use aws-sdk-go-v2 here. 
-	// For now, we abstract it behind a local file cache.
+	// 1. If S3 client is configured, attempt download from S3
+	if s.s3Client != nil && s.s3Bucket != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		resp, err := s.s3Client.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(s.s3Bucket),
+			Key:    aws.String(s.s3Key),
+		})
+		if err == nil && resp != nil {
+			defer resp.Body.Close()
+			bodyBytes, readErr := io.ReadAll(resp.Body)
+			if readErr == nil && len(bodyBytes) > 0 {
+				fmt.Printf("☁️  Loaded memory store from s3://%s/%s (%d bytes)\n", s.s3Bucket, s.s3Key, len(bodyBytes))
+				_ = os.MkdirAll(filepath.Dir(s.localFile), 0755)
+				_ = os.WriteFile(s.localFile, bodyBytes, 0644)
+
+				scanner := bufio.NewScanner(bytes.NewReader(bodyBytes))
+				for scanner.Scan() {
+					var inc Incident
+					if err := json.Unmarshal(scanner.Bytes(), &inc); err == nil {
+						s.incidents = append(s.incidents, inc)
+					}
+				}
+				return scanner.Err()
+			}
+		} else if err != nil {
+			var noKey *s3types.NoSuchKey
+			if errors.As(err, &noKey) {
+				fmt.Printf("ℹ️  s3://%s/%s does not exist yet. Starting with local/empty store.\n", s.s3Bucket, s.s3Key)
+			} else {
+				fmt.Printf("⚠️  Could not fetch from S3: %v. Falling back to local file.\n", err)
+			}
+		}
+	}
+
+	// 2. Fallback to local file cache
 	file, err := os.Open(s.localFile)
 	if err != nil {
 		return err
@@ -83,7 +164,7 @@ func (s *Store) SaveOutcome(inc Incident) error {
 	if err != nil {
 		return err
 	}
-	
+
 	if err := os.MkdirAll(filepath.Dir(s.localFile), 0755); err != nil {
 		return err
 	}
@@ -93,14 +174,36 @@ func (s *Store) SaveOutcome(inc Incident) error {
 		return err
 	}
 	defer f.Close()
-	
+
 	if _, err := f.Write(append(data, '\n')); err != nil {
 		return err
 	}
 
-	// TODO: Upload to S3 if s3Bucket is configured
-	if s.s3Bucket != "" {
-		fmt.Printf("☁️  (Mock) Uploaded updated memory.jsonl to s3://%s/%s\n", s.s3Bucket, s.s3Key)
+	// Upload to S3 if s3Bucket is configured
+	if s.s3Client != nil && s.s3Bucket != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		var buf bytes.Buffer
+		for _, item := range s.incidents {
+			line, err := json.Marshal(item)
+			if err == nil {
+				buf.Write(line)
+				buf.WriteByte('\n')
+			}
+		}
+
+		_, err := s.s3Client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket:      aws.String(s.s3Bucket),
+			Key:         aws.String(s.s3Key),
+			Body:        bytes.NewReader(buf.Bytes()),
+			ContentType: aws.String("application/x-ndjson"),
+		})
+		if err != nil {
+			fmt.Printf("⚠️  Failed to upload memory.jsonl to s3://%s/%s: %v\n", s.s3Bucket, s.s3Key, err)
+		} else {
+			fmt.Printf("☁️  Successfully synced %d incidents to s3://%s/%s\n", len(s.incidents), s.s3Bucket, s.s3Key)
+		}
 	}
 
 	return nil
@@ -168,7 +271,7 @@ func GetEmbedding(ctx context.Context, text string) ([]float64, error) {
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ollamaHost+"/api/embeddings", bytes.NewBuffer(reqBody))
 	req.Header.Set("Content-Type", "application/json")
-	
+
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -195,12 +298,6 @@ func GetEmbedding(ctx context.Context, text string) ([]float64, error) {
 }
 
 // GetReliabilityScore returns the empirical success rate for a given domain.
-// It scans all stored incidents for the domain and computes successes/total.
-// Returns 0.0 if no data exists (unproven).
-//
-// This previously compared AlertState (the raw alert JSON) against the
-// domain string, which could never be equal, so the score was permanently
-// 0.0 and the production gate blocked every runbook forever.
 func (s *Store) GetReliabilityScore(domain string) float64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -220,4 +317,3 @@ func (s *Store) GetReliabilityScore(domain string) float64 {
 	}
 	return successes / total
 }
-

@@ -121,7 +121,14 @@ func main() {
 	}
 	fmt.Printf("   ✅ [Coder Agent] Extracted %d bytes of Go source code.\n", len(rawGoCode))
 
-	// 1. Write the Go file to disk
+	// 1. Static AST Security Analysis
+	if err := ValidateSourceAST(rawGoCode); err != nil {
+		fmt.Printf("   🛑 [AST Guardrail] Rejected generated runbook: %v\n", err)
+		return "", "", fmt.Errorf("AST guardrail rejected generated runbook: %w", err)
+	}
+	fmt.Printf("   🛡️  [AST Guardrail] Code passed static analysis (imports & host bindings verified).\n")
+
+	// 2. Write the Go file to disk
 	tmpDir, err := os.MkdirTemp("", "reflex-coder-*")
 	if err != nil {
 		return "", "", err

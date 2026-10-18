@@ -36,10 +36,11 @@ kubectl rollout restart deploy/reflex
 kubectl rollout status deploy/reflex --timeout=60s
 ```
 
-### 4. Setup Ollama Proxy (Local Testing)
-If Ollama is running on the WSL host at `localhost:11434`, Reflex inside the cluster needs to reach it. Set up a socat proxy so the pod can reach it via `172.25.81.153:11435` (or your equivalent host IP):
+### 4. Connect to Host Ollama
+If Ollama is running on the Windows host at port 11434, configure `OLLAMA_HOST` in `k8s/reflex.yaml` with the WSL gateway IP:
 ```bash
-socat TCP-LISTEN:11435,fork,bind=0.0.0.0 TCP:127.0.0.1:11434 &
+export WSL_GATEWAY=$(ip route | awk '/default/ {print $3}')
+# Set OLLAMA_HOST to http://${WSL_GATEWAY}:11434 in k8s/reflex.yaml
 ```
 
 ### 5. Trigger a Synthetic Alert

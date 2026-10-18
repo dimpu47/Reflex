@@ -465,9 +465,13 @@ func (e *Engine) AutoRemediate(alert ingest.Alert, eval evaluator.EvaluationResp
 		env = "production" // default to safest mode
 	}
 
-	requireApproval := true
-	if env == "production" && !isJit {
-		requireApproval = false
+	requireApproval := false
+	if env == "production" || isJit {
+		requireApproval = true
+		// High-confidence production runbooks with proven track record (reliability >= 95%) can bypass manual gate
+		if env == "production" && !isJit && e.MemoryStore != nil && e.MemoryStore.GetReliabilityScore(domain) >= 0.95 {
+			requireApproval = false
+		}
 	}
 
 	if requireApproval {
